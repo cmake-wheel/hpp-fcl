@@ -48,6 +48,6 @@ jobs:
       - name: install wheel
         run: python -m pip install -i "file://${{ github.workspace }}/artifact" hpp-fcl
       - name: test
-        run: python -c "import hppfcl; assert abs(hppfcl.Quaternion(1, 2, 3, 4).norm() - 5.47722557505) < 1e-7"
+        run: python -c "import hppfcl; assert abs(hppfcl.Capsule(2, 3).computeVolume() - 71.2094334814) < 1e-7"
         env:
           PYTHONWARNINGS: error
