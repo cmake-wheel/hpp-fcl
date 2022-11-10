@@ -12,4 +12,4 @@ homepage = "https://github.com/humanoid-path-planner/hpp-fcl"
 [build-system]
 requires = ["cmeel[build]", "cmeel-assimp", "cmeel-octomap", "cmeel-eigen", "eigenpy"]
 build-backend = "cmeel.build"
-build-number = 2
+build-number = 4
