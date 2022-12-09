@@ -1,6 +1,6 @@
 [project]
 name = "hpp-fcl"
-version = "2.1.3"
+version = "2.1.4"
 description = " An extension of the Flexible Collision Library"
 readme = "README.md"
 license= "BSD-3-Clause"
@@ -12,4 +12,3 @@ homepage = "https://github.com/humanoid-path-planner/hpp-fcl"
 [build-system]
 requires = ["cmeel[build]", "cmeel-assimp", "cmeel-octomap", "cmeel-eigen", "eigenpy"]
 build-backend = "cmeel.build"
-build-number = 5
