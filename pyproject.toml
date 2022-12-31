@@ -1,6 +1,6 @@
 [project]
 name = "hpp-fcl"
-version = "2.1.4"
+version = "2.2.0"
 description = " An extension of the Flexible Collision Library"
 readme = "README.md"
 license= "BSD-3-Clause"
