@@ -13,23 +13,29 @@ jobs:
       matrix:
         os: ["ubuntu", "macos"]
         arch: ["x86_64"]
+        tests: ["true"]
         build: ["cp37-*", "cp38-*", "cp39-*", "cp310-*", "cp311-*", "pp37-*", "pp38-*", "pp39-*"]
         include:
           - arch: "aarch64"
             os: "ubuntu"
             build: "cp37-manylinux*"
+            tests: "false"
           - arch: "aarch64"
             os: "ubuntu"
             build: "cp38-manylinux*"
+            tests: "false"
           - arch: "aarch64"
             os: "ubuntu"
             build: "cp39-manylinux*"
+            tests: "false"
           - arch: "aarch64"
             os: "ubuntu"
             build: "cp310-manylinux*"
+            tests: "false"
           - arch: "aarch64"
             os: "ubuntu"
             build: "cp311-manylinux*"
+            tests: "false"
     steps:
       - uses: actions/checkout@v3
         with:
@@ -53,7 +59,7 @@ jobs:
           CIBW_MANYLINUX_PYPY_X86_64_IMAGE: "quay.io/pypa/manylinux2014_x86_64"
           CIBW_MANYLINUX_AARCH64_IMAGE: "quay.io/pypa/manylinux_2_28_aarch64"
           CIBW_REPAIR_WHEEL_COMMAND: ""
-          CIBW_ENVIRONMENT: CMEEL_JOBS="1" CMEEL_TEST_JOBS="1"
+          CIBW_ENVIRONMENT: CMEEL_JOBS="1" CMEEL_TEST_JOBS="1" CMEEL_RUN_TESTS="${{ matrix.tests }}"
       - uses: actions/upload-artifact@v3
         with:
           path: wh
