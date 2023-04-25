@@ -1,13 +1,13 @@
+[build-system]
+requires = ["cmeel[build]", "cmeel-assimp", "cmeel-octomap", "eigenpy[build]"]
+build-backend = "cmeel.build"
+
 [project]
 name = "hpp-fcl"
 version = "2.3.1"
 description = " An extension of the Flexible Collision Library"
-license= "BSD-3-Clause"
+license = "BSD-3-Clause"
 dependencies = ["cmeel-assimp", "cmeel-octomap", "eigenpy"]
 
 [project.urls]
 homepage = "https://github.com/humanoid-path-planner/hpp-fcl"
-
-[build-system]
-requires = ["cmeel[build]", "cmeel-assimp", "cmeel-octomap", "eigenpy[build]"]
-build-backend = "cmeel.build"
