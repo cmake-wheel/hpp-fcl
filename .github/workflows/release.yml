@@ -7,35 +7,41 @@ on:
 
 jobs:
   build_wheels:
-    name: "Build ${{ matrix.build }} wheels on ${{ matrix.os }} ${{ matrix.arch }}"
-    runs-on: "${{ matrix.os }}-latest"
+    name: "${{ matrix.build }} ${{ matrix.os }} ${{ matrix.arch }}"
+    runs-on: "${{ matrix.os }}"
     strategy:
       matrix:
-        os: ["ubuntu", "macos"]
+        os: ["ubuntu-latest", "macos-10.15"]
         arch: ["x86_64"]
         tests: ["true"]
-        build: ["cp37-*", "cp38-*", "cp39-*", "cp310-*", "cp311-*", "pp37-*", "pp38-*", "pp39-*"]
+        build: ["cp37-*", "cp38-*", "cp39-*", "cp310-*", "cp311-*", "pp38-*"]
         include:
           - arch: "aarch64"
-            os: "ubuntu"
+            os: "ubuntu-latest"
             build: "cp37-manylinux*"
             tests: "false"
           - arch: "aarch64"
-            os: "ubuntu"
+            os: "ubuntu-latest"
             build: "cp38-manylinux*"
             tests: "false"
           - arch: "aarch64"
-            os: "ubuntu"
+            os: "ubuntu-latest"
             build: "cp39-manylinux*"
             tests: "false"
           - arch: "aarch64"
-            os: "ubuntu"
+            os: "ubuntu-latest"
             build: "cp310-manylinux*"
             tests: "false"
           - arch: "aarch64"
-            os: "ubuntu"
+            os: "ubuntu-latest"
             build: "cp311-manylinux*"
             tests: "false"
+          - arch: "x86_64"
+            os: "ubuntu-latest"
+            build: "pp37-*"
+          - arch: "x86_64"
+            os: "ubuntu-latest"
+            build: "pp39-*"
     steps:
       - uses: actions/checkout@v3
         with:
