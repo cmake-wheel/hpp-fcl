@@ -11,3 +11,6 @@ dependencies = ["cmeel-assimp", "cmeel-octomap", "eigenpy"]
 
 [project.urls]
 homepage = "https://github.com/humanoid-path-planner/hpp-fcl"
+
+[tool.cmeel]
+build-number = 1
