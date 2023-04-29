@@ -2,6 +2,9 @@ name: Test Wheel packaging
 
 on: ["push", "pull_request"]
 
+env:
+  CMEEL_CMAKE_ARGS: "-D_GLIBCXX_USE_CXX11_ABI=0"
+
 jobs:
   build:
     name: Build ${{ matrix.python-version }} on ${{ matrix.os }}
