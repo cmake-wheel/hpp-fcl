@@ -19,6 +19,6 @@ macos_arm64_task:
   run_cibuildwheel_script:
     - cibuildwheel
   publish_script:
-    - python -m twine upload -u __token__ wheelhouse/hpp*.whl
+    - python -m twine upload -u __token__ wheelhouse/hpp_fcl*.whl
   wheels_artifacts:
     path: "wheelhouse/*"
