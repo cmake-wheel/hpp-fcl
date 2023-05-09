@@ -7,7 +7,7 @@ dependencies = ["cmeel-assimp<6", "cmeel-octomap<2", "eigenpy<4"]
 description = " An extension of the Flexible Collision Library"
 license = "BSD-3-Clause"
 name = "hpp-fcl"
-version = "2.3.2"
+version = "2.3.3"
 
 [project.urls]
 homepage = "https://github.com/humanoid-path-planner/hpp-fcl"
