@@ -1,9 +1,9 @@
 [build-system]
 build-backend = "cmeel.build"
-requires = ["cmeel-assimp < 6", "cmeel-octomap < 2", "cmeel[build]", "eigenpy[build] < 4"]
+requires = ["cmeel-assimp >= 5.2.5.1, < 6", "cmeel-octomap >= 1.9.8.2, < 2", "cmeel[build]", "eigenpy[build] < 4"]
 
 [project]
-dependencies = ["cmeel-assimp < 6", "cmeel-octomap < 2", "eigenpy < 4"]
+dependencies = ["cmeel-assimp>= 5.2.5.1, < 6", "cmeel-octomap >= 1.9.8.2, < 2", "eigenpy < 4"]
 description = " An extension of the Flexible Collision Library"
 license = "BSD-3-Clause"
 name = "hpp-fcl"
