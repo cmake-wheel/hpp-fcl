@@ -1,19 +1,16 @@
 [build-system]
 build-backend = "cmeel.build"
-requires = ["cmeel-assimp >= 5.2.5.1, < 6", "cmeel-octomap >= 1.9.8.2, < 2", "cmeel[build]", "eigenpy[build] < 4"]
+requires = ["cmeel-assimp >= 5.2.5.1, < 6", "cmeel-octomap >= 1.9.8.2, < 2", "cmeel[build]", "eigenpy[build] >= 3.1, < 4"]
 
 [project]
-dependencies = ["cmeel-assimp>= 5.2.5.1, < 6", "cmeel-octomap >= 1.9.8.2, < 2", "eigenpy < 4"]
+dependencies = ["cmeel-assimp >= 5.2.5.1, < 6", "cmeel-octomap >= 1.9.8.2, < 2", "eigenpy >= 3.1, < 4"]
 description = " An extension of the Flexible Collision Library"
 license = "BSD-3-Clause"
 name = "hpp-fcl"
-version = "2.3.3"
+version = "2.3.4"
 
 [project.urls]
 homepage = "https://github.com/humanoid-path-planner/hpp-fcl"
-
-[tool.cmeel]
-build-number = 3
 
 [tool.tomlsort]
 all = true
