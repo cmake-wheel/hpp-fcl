@@ -7,7 +7,7 @@ dependencies = ["cmeel-assimp >= 5.2.5.1, < 6", "cmeel-boost ~= 1.82.0", "cmeel-
 description = " An extension of the Flexible Collision Library"
 license = "BSD-3-Clause"
 name = "hpp-fcl"
-version = "2.3.4"
+version = "2.3.5"
 
 [project.urls]
 homepage = "https://github.com/humanoid-path-planner/hpp-fcl"
