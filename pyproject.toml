@@ -12,5 +12,8 @@ version = "2.3.5"
 [project.urls]
 homepage = "https://github.com/humanoid-path-planner/hpp-fcl"
 
+[tool.cmeel]
+build-number = 1
+
 [tool.tomlsort]
 all = true
