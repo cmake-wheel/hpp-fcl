@@ -2,7 +2,7 @@ macos_arm64_task:
   name: Build macOS arm64 wheels.
   only_if: $CIRRUS_TAG =~ 'v.*' && $CIRRUS_REPO_OWNER == 'cmake-wheel'
   environment:
-    TWINE_PASSWORD: ENCRYPTED[8c0d0286cd8c18e23e5b0a624bd7ae71a7759141e28fc77d9f3322ecf3a2fe99288d46a047de832fb5569df02a043554]
+    TWINE_PASSWORD: ENCRYPTED[!56b7088276b3c2a2b559aa7f3a18b903286219a52149c978e3ae8d96edb5433ed6863e6eba1f37632afe3a9519689345!]
   macos_instance:
     image: ghcr.io/cirruslabs/macos-monterey-xcode
   env:
