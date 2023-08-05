@@ -1,5 +1,5 @@
 [build-system]
-build-backend = "cmeel.build"
+build-backend = "cmeel"
 requires = ["cmeel-assimp >= 5.2.5.1, < 6", "cmeel-octomap >= 1.9.8.2, < 2", "cmeel[build]", "eigenpy[build] >= 3.1, < 4"]
 
 [project]
