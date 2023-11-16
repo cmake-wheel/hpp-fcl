@@ -1,7 +1,7 @@
 [build-system]
 build-backend = "cmeel"
 requires = [
-  "cmeel-assimp >= 5.2.5.1, < 6",
+  "cmeel-assimp >= 5.3.1, < 6",
   "cmeel-boost ~= 1.83.0",
   "cmeel-octomap >= 1.9.8.2, < 2",
   "cmeel-qhull >= 8.0.2, < 8.0.3",
@@ -11,7 +11,7 @@ requires = [
 
 [project]
 dependencies = [
-  "cmeel-assimp >= 5.2.5.1, < 6",
+  "cmeel-assimp >= 5.3.1, < 6",
   "cmeel-boost ~= 1.83.0",
   "cmeel-octomap >= 1.9.8.2, < 2",
   "cmeel-qhull >= 8.0.2, < 8.0.3",
