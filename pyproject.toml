@@ -27,7 +27,6 @@ homepage = "https://github.com/humanoid-path-planner/hpp-fcl"
 
 [tool.cmeel]
 build-number = 1
-configure-args = ["-DHPP_FCL_HAS_QHULL=ON"]
 
 [tool.tomlsort]
 all = true
