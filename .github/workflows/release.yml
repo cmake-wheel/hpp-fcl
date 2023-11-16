@@ -2,13 +2,6 @@ name: Release on PyPI
 
 on:
   push:
-    tags:
-      - "v*"
-    branches:
-      - cmeel
-  pull_request_target:
-    branches:
-      - cmeel
 
 env:
   CMEEL_LOG_LEVEL: DEBUG
