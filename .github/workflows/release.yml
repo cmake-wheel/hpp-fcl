@@ -17,6 +17,7 @@ jobs:
         build: ["cp38-*", "cp39-*", "cp310-*", "cp311-*", "cp312-*"]
         tests: ["ON", "OFF"]
         exclude:
+          - os: "ubuntu-latest"
           - os: "macos-latest"
             arch: "aarch64"
           - arch: "aarch64"
