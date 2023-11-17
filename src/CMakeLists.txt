@@ -175,7 +175,12 @@ add_library(${LIBRARY_NAME}
 
 if(UNIX)
   get_relative_rpath(${CMAKE_INSTALL_FULL_LIBDIR} ${PROJECT_NAME}_INSTALL_RPATH)
-  set_target_properties(${PROJECT_NAME} PROPERTIES INSTALL_RPATH "${${PROJECT_NAME}_INSTALL_RPATH}")
+  if(APPLE)
+      set_target_properties(${PROJECT_NAME} PROPERTIES INSTALL_RPATH
+          "${${PROJECT_NAME}_INSTALL_RPATH};${${PROJECT_NAME}_INSTALL_RPATH/..")
+  else()
+    set_target_properties(${PROJECT_NAME} PROPERTIES INSTALL_RPATH "${${PROJECT_NAME}_INSTALL_RPATH}")
+  endif()
 endif()
 
 # IDE sources and headers sorting
