@@ -24,7 +24,8 @@ version = "2.4.0"
 
 [project.urls]
 changelog = "https://github.com/humanoid-path-planner/hpp-fcl/blob/master/CHANGELOG.md"
-homepage = "https://github.com/humanoid-path-planner/hpp-fcl"
+homepage = "https://github.com/cmake-wheel/hpp-fcl"
+upstream = "https://github.com/humanoid-path-planner/hpp-fcl"
 
 [tool.cmeel]
 configure-args = ["-DHPP_FCL_HAS_QHULL=ON"]
