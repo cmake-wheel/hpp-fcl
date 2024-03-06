@@ -20,7 +20,7 @@ dependencies = [
 description = " An extension of the Flexible Collision Library"
 license = "BSD-3-Clause"
 name = "hpp-fcl"
-version = "2.4.1"
+version = "2.4.2"
 
 [project.urls]
 changelog = "https://github.com/humanoid-path-planner/hpp-fcl/blob/master/CHANGELOG.md"
