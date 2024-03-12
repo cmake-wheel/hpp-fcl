@@ -28,7 +28,7 @@ homepage = "https://github.com/cmake-wheel/hpp-fcl"
 upstream = "https://github.com/humanoid-path-planner/hpp-fcl"
 
 [tool.cmeel]
-build-number = 1
+build-number = 2
 configure-args = ["-DHPP_FCL_HAS_QHULL=ON"]
 
 [tool.tomlsort]
