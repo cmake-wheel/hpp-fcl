@@ -5,7 +5,7 @@
  *  Copyright (c) 2014-2015, Open Source Robotics Foundation
  *  Copyright (c) 2018-2019, Centre National de la Recherche Scientifique
  *  All rights reserved.
- *  Copyright (c) 2021-2022, INRIA
+ *  Copyright (c) 2021-2024, INRIA
  *  All rights reserved.
  *  Redistribution and use in source and binary forms, with or without
  *  modification, are permitted provided that the following conditions
@@ -41,10 +41,11 @@
 #define HPP_FCL_NARROWPHASE_H
 
 #include <limits>
-#include <iostream>
 
 #include <hpp/fcl/narrowphase/gjk.h>
 #include <hpp/fcl/collision_data.h>
+#include <hpp/fcl/narrowphase/narrowphase_defaults.h>
+#include <hpp/fcl/logging.h>
 
 namespace hpp {
 namespace fcl {
@@ -52,332 +53,96 @@ namespace fcl {
 /// @brief collision and distance solver based on GJK algorithm implemented in
 /// fcl (rewritten the code from the GJK in bullet)
 struct HPP_FCL_DLLAPI GJKSolver {
-  typedef Eigen::Array<FCL_REAL, 1, 2> Array2d;
+ public:
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-  /// @brief initialize GJK
-  template <typename S1, typename S2>
-  void initialize_gjk(details::GJK& gjk, const details::MinkowskiDiff& shape,
-                      const S1& s1, const S2& s2, Vec3f& guess,
-                      support_func_guess_t& support_hint) const {
-    switch (gjk_initial_guess) {
-      case GJKInitialGuess::DefaultGuess:
-        guess = Vec3f(1, 0, 0);
-        support_hint.setZero();
-        break;
-      case GJKInitialGuess::CachedGuess:
-        guess = cached_guess;
-        support_hint = support_func_cached_guess;
-        break;
-      case GJKInitialGuess::BoundingVolumeGuess:
-        if (s1.aabb_local.volume() < 0 || s2.aabb_local.volume() < 0) {
-          HPP_FCL_THROW_PRETTY(
-              "computeLocalAABB must have been called on the shapes before "
-              "using "
-              "GJKInitialGuess::BoundingVolumeGuess.",
-              std::logic_error);
-        }
-        guess.noalias() = s1.aabb_local.center() -
-                          (shape.oR1 * s2.aabb_local.center() + shape.ot1);
-        support_hint.setZero();
-        break;
-      default:
-        HPP_FCL_THROW_PRETTY("Wrong initial guess for GJK.", std::logic_error);
-    }
-    // TODO: use gjk_initial_guess instead
-    HPP_FCL_COMPILER_DIAGNOSTIC_PUSH
-    HPP_FCL_COMPILER_DIAGNOSTIC_IGNORED_DEPRECECATED_DECLARATIONS
-    if (enable_cached_guess) {
-      guess = cached_guess;
-      support_hint = support_func_cached_guess;
-    }
-    HPP_FCL_COMPILER_DIAGNOSTIC_POP
+  /// @brief GJK algorithm
+  mutable details::GJK gjk;
 
-    gjk.setDistanceEarlyBreak(distance_upper_bound);
+  /// @brief maximum number of iterations of GJK
+  size_t gjk_max_iterations;
 
-    gjk.gjk_variant = gjk_variant;
-    gjk.convergence_criterion = gjk_convergence_criterion;
-    gjk.convergence_criterion_type = gjk_convergence_criterion_type;
-  }
+  /// @brief tolerance of GJK
+  FCL_REAL gjk_tolerance;
 
-  /// @brief intersection checking between two shapes
-  template <typename S1, typename S2>
-  bool shapeIntersect(const S1& s1, const Transform3f& tf1, const S2& s2,
-                      const Transform3f& tf2, FCL_REAL& distance_lower_bound,
-                      bool enable_penetration, Vec3f* contact_points,
-                      Vec3f* normal) const {
-    details::MinkowskiDiff shape;
-    shape.set(&s1, &s2, tf1, tf2);
+  /// @brief which warm start to use for GJK
+  GJKInitialGuess gjk_initial_guess;
 
-    Vec3f guess;
-    support_func_guess_t support_hint;
-    details::GJK gjk((unsigned int)gjk_max_iterations, gjk_tolerance);
-    initialize_gjk(gjk, shape, s1, s2, guess, support_hint);
+  /// @brief Whether smart guess can be provided
+  /// @Deprecated Use gjk_initial_guess instead
+  HPP_FCL_DEPRECATED_MESSAGE(Use gjk_initial_guess instead)
+  bool enable_cached_guess;
 
-    details::GJK::Status gjk_status = gjk.evaluate(shape, guess, support_hint);
-    HPP_FCL_COMPILER_DIAGNOSTIC_PUSH
-    HPP_FCL_COMPILER_DIAGNOSTIC_IGNORED_DEPRECECATED_DECLARATIONS
-    if (gjk_initial_guess == GJKInitialGuess::CachedGuess ||
-        enable_cached_guess) {
-      cached_guess = gjk.getGuessFromSimplex();
-      support_func_cached_guess = gjk.support_hint;
-    }
-    HPP_FCL_COMPILER_DIAGNOSTIC_POP
+  /// @brief smart guess
+  mutable Vec3f cached_guess;
 
-    Vec3f w0, w1;
-    switch (gjk_status) {
-      case details::GJK::Inside:
-        if (!enable_penetration && contact_points == NULL && normal == NULL)
-          return true;
-        if (gjk.hasPenetrationInformation(shape)) {
-          gjk.getClosestPoints(shape, w0, w1);
-          distance_lower_bound = gjk.distance;
-          if (normal)
-            (*normal).noalias() = tf1.getRotation() * (w0 - w1).normalized();
-          if (contact_points) *contact_points = tf1.transform((w0 + w1) / 2);
-          return true;
-        } else {
-          details::EPA epa(epa_max_face_num, epa_max_vertex_num,
-                           epa_max_iterations, epa_tolerance);
-          details::EPA::Status epa_status = epa.evaluate(gjk, -guess);
-          if (epa_status & details::EPA::Valid ||
-              epa_status == details::EPA::OutOfFaces        // Warnings
-              || epa_status == details::EPA::OutOfVertices  // Warnings
-          ) {
-            epa.getClosestPoints(shape, w0, w1);
-            distance_lower_bound = -epa.depth;
-            if (normal) (*normal).noalias() = tf1.getRotation() * epa.normal;
-            if (contact_points)
-              *contact_points =
-                  tf1.transform(w0 - epa.normal * (epa.depth * 0.5));
-            return true;
-          } else if (epa_status == details::EPA::FallBack) {
-            epa.getClosestPoints(shape, w0, w1);
-            distance_lower_bound = -epa.depth;  // Should be zero
-            if (normal) (*normal).noalias() = tf1.getRotation() * epa.normal;
-            if (contact_points) *contact_points = tf1.transform(w0);
-            return true;
-          }
-          distance_lower_bound = -(std::numeric_limits<FCL_REAL>::max)();
-          // EPA failed but we know there is a collision so we should
-          return true;
-        }
-        break;
-      case details::GJK::Valid:
-        distance_lower_bound = gjk.distance;
-        break;
-      default:;
-    }
+  /// @brief smart guess for the support function
+  mutable support_func_guess_t support_func_cached_guess;
 
-    return false;
-  }
+  /// @brief If GJK can guarantee that the distance between the shapes is
+  /// greater than this value, it will early stop.
+  FCL_REAL distance_upper_bound;
 
-  //// @brief intersection checking between one shape and a triangle with
-  /// transformation
-  /// @return true if the shape are colliding.
-  template <typename S>
-  bool shapeTriangleInteraction(const S& s, const Transform3f& tf1,
-                                const Vec3f& P1, const Vec3f& P2,
-                                const Vec3f& P3, const Transform3f& tf2,
-                                FCL_REAL& distance, Vec3f& p1, Vec3f& p2,
-                                Vec3f& normal) const {
-    bool col;
-    // Express everything in frame 1
-    const Transform3f tf_1M2(tf1.inverseTimes(tf2));
-    TriangleP tri(tf_1M2.transform(P1), tf_1M2.transform(P2),
-                  tf_1M2.transform(P3));
+  /// @brief Variant of the GJK algorithm (Default, Nesterov or Polyak).
+  GJKVariant gjk_variant;
 
-    details::MinkowskiDiff shape;
-    shape.set(&s, &tri);
+  /// @brief Convergence criterion for GJK
+  GJKConvergenceCriterion gjk_convergence_criterion;
 
-    Vec3f guess;
-    support_func_guess_t support_hint;
-    details::GJK gjk((unsigned int)gjk_max_iterations, gjk_tolerance);
-    initialize_gjk(gjk, shape, s, tri, guess, support_hint);
+  /// @brief Absolute or relative convergence criterion for GJK
+  GJKConvergenceCriterionType gjk_convergence_criterion_type;
 
-    details::GJK::Status gjk_status = gjk.evaluate(shape, guess, support_hint);
+  /// @brief EPA algorithm
+  mutable details::EPA epa;
 
-    HPP_FCL_COMPILER_DIAGNOSTIC_PUSH
-    HPP_FCL_COMPILER_DIAGNOSTIC_IGNORED_DEPRECECATED_DECLARATIONS
-    if (gjk_initial_guess == GJKInitialGuess::CachedGuess ||
-        enable_cached_guess) {
-      cached_guess = gjk.getGuessFromSimplex();
-      support_func_cached_guess = gjk.support_hint;
-    }
-    HPP_FCL_COMPILER_DIAGNOSTIC_PUSH
+  /// @brief maximum number of iterations of EPA
+  size_t epa_max_iterations;
 
-    Vec3f w0, w1;
-    switch (gjk_status) {
-      case details::GJK::Inside:
-        col = true;
-        if (gjk.hasPenetrationInformation(shape)) {
-          gjk.getClosestPoints(shape, w0, w1);
-          distance = gjk.distance;
-          normal.noalias() = tf1.getRotation() * (w0 - w1).normalized();
-          p1 = p2 = tf1.transform((w0 + w1) / 2);
-        } else {
-          details::EPA epa(epa_max_face_num, epa_max_vertex_num,
-                           epa_max_iterations, epa_tolerance);
-          details::EPA::Status epa_status = epa.evaluate(gjk, -guess);
-          if (epa_status & details::EPA::Valid ||
-              epa_status == details::EPA::OutOfFaces        // Warnings
-              || epa_status == details::EPA::OutOfVertices  // Warnings
-          ) {
-            epa.getClosestPoints(shape, w0, w1);
-            distance = -epa.depth;
-            normal.noalias() = tf1.getRotation() * epa.normal;
-            p1 = p2 = tf1.transform(w0 - epa.normal * (epa.depth * 0.5));
-            assert(distance <= 1e-6);
-          } else {
-            distance = -(std::numeric_limits<FCL_REAL>::max)();
-            gjk.getClosestPoints(shape, w0, w1);
-            p1 = p2 = tf1.transform(w0);
-          }
-        }
-        break;
-      case details::GJK::Valid:
-      case details::GJK::EarlyStopped:
-      case details::GJK::Failed:
-        col = false;
+  /// @brief tolerance of EPA
+  FCL_REAL epa_tolerance;
 
-        gjk.getClosestPoints(shape, p1, p2);
-        // TODO On degenerated case, the closest point may be wrong
-        // (i.e. an object face normal is colinear to gjk.ray
-        // assert (distance == (w0 - w1).norm());
-        distance = gjk.distance;
-
-        p1 = tf1.transform(p1);
-        p2 = tf1.transform(p2);
-        assert(distance > 0);
-        break;
-      default:
-        assert(false && "should not reach type part.");
-        throw std::logic_error("GJKSolver: should not reach this part.");
-    }
-    return col;
-  }
-
-  /// @brief distance computation between two shapes
-  template <typename S1, typename S2>
-  bool shapeDistance(const S1& s1, const Transform3f& tf1, const S2& s2,
-                     const Transform3f& tf2, FCL_REAL& distance, Vec3f& p1,
-                     Vec3f& p2, Vec3f& normal) const {
-#ifndef NDEBUG
-    FCL_REAL eps(sqrt(std::numeric_limits<FCL_REAL>::epsilon()));
-#endif
-    details::MinkowskiDiff shape;
-    shape.set(&s1, &s2, tf1, tf2);
-
-    Vec3f guess;
-    support_func_guess_t support_hint;
-    details::GJK gjk((unsigned int)gjk_max_iterations, gjk_tolerance);
-    initialize_gjk(gjk, shape, s1, s2, guess, support_hint);
-
-    details::GJK::Status gjk_status = gjk.evaluate(shape, guess, support_hint);
-    if (gjk_initial_guess == GJKInitialGuess::CachedGuess ||
-        enable_cached_guess) {
-      cached_guess = gjk.getGuessFromSimplex();
-      support_func_cached_guess = gjk.support_hint;
-    }
-
-    if (gjk_status == details::GJK::Failed) {
-      // TODO: understand why GJK fails between cylinder and box
-      assert(distance * distance < sqrt(eps));
-      Vec3f w0, w1;
-      gjk.getClosestPoints(shape, w0, w1);
-      distance = 0;
-      p1 = tf1.transform(w0);
-      p2 = tf1.transform(w1);
-      normal.setZero();
-      return false;
-    } else if (gjk_status == details::GJK::Valid) {
-      gjk.getClosestPoints(shape, p1, p2);
-      // TODO On degenerated case, the closest point may be wrong
-      // (i.e. an object face normal is colinear to gjk.ray
-      // assert (distance == (w0 - w1).norm());
-      distance = gjk.distance;
-
-      normal.noalias() = tf1.getRotation() * gjk.ray;
-      normal.normalize();
-      p1 = tf1.transform(p1);
-      p2 = tf1.transform(p2);
-      return true;
-    } else if (gjk_status == details::GJK::EarlyStopped) {
-      distance = gjk.distance;
-      p1 = p2 = normal =
-          Vec3f::Constant(std::numeric_limits<FCL_REAL>::quiet_NaN());
-      return true;
-    } else {
-      assert(gjk_status == details::GJK::Inside);
-      if (gjk.hasPenetrationInformation(shape)) {
-        gjk.getClosestPoints(shape, p1, p2);
-        distance = gjk.distance;
-        // Return contact points in case of collision
-        // p1 = tf1.transform (p1);
-        // p2 = tf1.transform (p2);
-        normal.noalias() = tf1.getRotation() * (p1 - p2);
-        normal.normalize();
-        p1 = tf1.transform(p1);
-        p2 = tf1.transform(p2);
-      } else {
-        details::EPA epa(epa_max_face_num, epa_max_vertex_num,
-                         epa_max_iterations, epa_tolerance);
-        details::EPA::Status epa_status = epa.evaluate(gjk, -guess);
-        if (epa_status & details::EPA::Valid ||
-            epa_status == details::EPA::OutOfFaces        // Warnings
-            || epa_status == details::EPA::OutOfVertices  // Warnings
-            || epa_status == details::EPA::FallBack) {
-          Vec3f w0, w1;
-          epa.getClosestPoints(shape, w0, w1);
-          assert(epa.depth >= -eps);
-          distance = (std::min)(0., -epa.depth);
-          normal.noalias() = tf1.getRotation() * epa.normal;
-          p1 = tf1.transform(w0);
-          p2 = tf1.transform(w1);
-          return false;
-        }
-        distance = -(std::numeric_limits<FCL_REAL>::max)();
-        gjk.getClosestPoints(shape, p1, p2);
-        p1 = tf1.transform(p1);
-        p2 = tf1.transform(p2);
-      }
-      return false;
-    }
-  }
+  /// @brief Minkowski difference used by GJK and EPA algorithms
+  mutable details::MinkowskiDiff minkowski_difference;
 
   HPP_FCL_COMPILER_DIAGNOSTIC_PUSH
   HPP_FCL_COMPILER_DIAGNOSTIC_IGNORED_DEPRECECATED_DECLARATIONS
   /// @brief Default constructor for GJK algorithm
-  GJKSolver() {
-    gjk_max_iterations = 128;
-    gjk_tolerance = 1e-6;
-    epa_max_face_num = 128;
-    epa_max_vertex_num = 64;
-    epa_max_iterations = 255;
-    epa_tolerance = 1e-6;
-    enable_cached_guess = false;  // TODO: use gjk_initial_guess instead
-    cached_guess = Vec3f(1, 0, 0);
-    support_func_cached_guess = support_func_guess_t::Zero();
-    distance_upper_bound = (std::numeric_limits<FCL_REAL>::max)();
-    gjk_initial_guess = GJKInitialGuess::DefaultGuess;
-    gjk_variant = GJKVariant::DefaultGJK;
-    gjk_convergence_criterion = GJKConvergenceCriterion::VDB;
-    gjk_convergence_criterion_type = GJKConvergenceCriterionType::Relative;
-  }
+  /// By default, we don't want EPA to allocate memory because
+  /// certain functions of the `GJKSolver` class have specializations
+  /// which don't use EPA (and/or GJK).
+  /// So we give EPA's constructor a max number of iterations of zero.
+  /// Only the functions that need EPA will reset the algorithm and allocate
+  /// memory if needed.
+  GJKSolver()
+      : gjk(GJK_DEFAULT_MAX_ITERATIONS, GJK_DEFAULT_TOLERANCE),
+        gjk_max_iterations(GJK_DEFAULT_MAX_ITERATIONS),
+        gjk_tolerance(GJK_DEFAULT_TOLERANCE),
+        gjk_initial_guess(GJKInitialGuess::DefaultGuess),
+        enable_cached_guess(false),  // Use gjk_initial_guess instead
+        cached_guess(Vec3f(1, 0, 0)),
+        support_func_cached_guess(support_func_guess_t::Zero()),
+        distance_upper_bound((std::numeric_limits<FCL_REAL>::max)()),
+        gjk_variant(GJKVariant::DefaultGJK),
+        gjk_convergence_criterion(GJKConvergenceCriterion::Default),
+        gjk_convergence_criterion_type(GJKConvergenceCriterionType::Absolute),
+        epa(0, EPA_DEFAULT_TOLERANCE),
+        epa_max_iterations(EPA_DEFAULT_MAX_ITERATIONS),
+        epa_tolerance(EPA_DEFAULT_TOLERANCE) {}
 
   /// @brief Constructor from a DistanceRequest
   ///
   /// \param[in] request DistanceRequest input
   ///
-  GJKSolver(const DistanceRequest& request) {
-    cached_guess = Vec3f(1, 0, 0);
-    support_func_cached_guess = support_func_guess_t::Zero();
-    distance_upper_bound = (std::numeric_limits<FCL_REAL>::max)();
-
-    // EPS settings
-    epa_max_face_num = 128;
-    epa_max_vertex_num = 64;
-    epa_max_iterations = 255;
-    epa_tolerance = 1e-6;
+  /// See the default constructor; by default, we don't want
+  /// EPA to allocate memory so we call EPA's constructor with 0 max
+  /// number of iterations.
+  /// However, the `set` method stores the actual values of the request.
+  /// EPA will thus allocate memory only if needed.
+  explicit GJKSolver(const DistanceRequest& request)
+      : gjk(request.gjk_max_iterations, request.gjk_tolerance),
+        epa(0, request.epa_tolerance) {
+    this->cached_guess = Vec3f(1, 0, 0);
+    this->support_func_cached_guess = support_func_guess_t::Zero();
 
     set(request);
   }
@@ -387,35 +152,49 @@ struct HPP_FCL_DLLAPI GJKSolver {
   /// \param[in] request DistanceRequest input
   ///
   void set(const DistanceRequest& request) {
-    gjk_initial_guess = request.gjk_initial_guess;
-    // TODO: use gjk_initial_guess instead
-    enable_cached_guess = request.enable_cached_gjk_guess;
-    gjk_variant = request.gjk_variant;
-    gjk_convergence_criterion = request.gjk_convergence_criterion;
-    gjk_convergence_criterion_type = request.gjk_convergence_criterion_type;
-    gjk_tolerance = request.gjk_tolerance;
-    gjk_max_iterations = request.gjk_max_iterations;
-    if (gjk_initial_guess == GJKInitialGuess::CachedGuess ||
-        enable_cached_guess) {
-      cached_guess = request.cached_gjk_guess;
-      support_func_cached_guess = request.cached_support_func_guess;
+    // ---------------------
+    // GJK settings
+    this->gjk_initial_guess = request.gjk_initial_guess;
+    this->enable_cached_guess = request.enable_cached_gjk_guess;
+    if (this->gjk_initial_guess == GJKInitialGuess::CachedGuess ||
+        this->enable_cached_guess) {
+      this->cached_guess = request.cached_gjk_guess;
+      this->support_func_cached_guess = request.cached_support_func_guess;
     }
+    this->gjk_max_iterations = request.gjk_max_iterations;
+    this->gjk_tolerance = request.gjk_tolerance;
+    // For distance computation, we don't want GJK to early stop
+    this->distance_upper_bound = (std::numeric_limits<FCL_REAL>::max)();
+    this->gjk_variant = request.gjk_variant;
+    this->gjk_convergence_criterion = request.gjk_convergence_criterion;
+    this->gjk_convergence_criterion_type =
+        request.gjk_convergence_criterion_type;
+
+    // ---------------------
+    // EPA settings
+    this->epa_max_iterations = request.epa_max_iterations;
+    this->epa_tolerance = request.epa_tolerance;
+
+    // ---------------------
+    // Reset GJK and EPA status
+    this->epa.status = details::EPA::Status::DidNotRun;
+    this->gjk.status = details::GJK::Status::DidNotRun;
   }
 
   /// @brief Constructor from a CollisionRequest
   ///
   /// \param[in] request CollisionRequest input
   ///
-  GJKSolver(const CollisionRequest& request) {
-    cached_guess = Vec3f(1, 0, 0);
-    support_func_cached_guess = support_func_guess_t::Zero();
-    distance_upper_bound = (std::numeric_limits<FCL_REAL>::max)();
-
-    // EPS settings
-    epa_max_face_num = 128;
-    epa_max_vertex_num = 64;
-    epa_max_iterations = 255;
-    epa_tolerance = 1e-6;
+  /// See the default constructor; by default, we don't want
+  /// EPA to allocate memory so we call EPA's constructor with 0 max
+  /// number of iterations.
+  /// However, the `set` method stores the actual values of the request.
+  /// EPA will thus allocate memory only if needed.
+  explicit GJKSolver(const CollisionRequest& request)
+      : gjk(request.gjk_max_iterations, request.gjk_tolerance),
+        epa(0, request.epa_tolerance) {
+    this->cached_guess = Vec3f(1, 0, 0);
+    this->support_func_cached_guess = support_func_guess_t::Zero();
 
     set(request);
   }
@@ -425,24 +204,36 @@ struct HPP_FCL_DLLAPI GJKSolver {
   /// \param[in] request CollisionRequest input
   ///
   void set(const CollisionRequest& request) {
-    gjk_initial_guess = request.gjk_initial_guess;
+    // ---------------------
+    // GJK settings
+    this->gjk_initial_guess = request.gjk_initial_guess;
     // TODO: use gjk_initial_guess instead
-    enable_cached_guess = request.enable_cached_gjk_guess;
-    gjk_variant = request.gjk_variant;
-    gjk_convergence_criterion = request.gjk_convergence_criterion;
-    gjk_convergence_criterion_type = request.gjk_convergence_criterion_type;
-    gjk_tolerance = request.gjk_tolerance;
-    gjk_max_iterations = request.gjk_max_iterations;
-    if (gjk_initial_guess == GJKInitialGuess::CachedGuess ||
-        enable_cached_guess) {
-      cached_guess = request.cached_gjk_guess;
-      support_func_cached_guess = request.cached_support_func_guess;
+    this->enable_cached_guess = request.enable_cached_gjk_guess;
+    if (this->gjk_initial_guess == GJKInitialGuess::CachedGuess ||
+        this->enable_cached_guess) {
+      this->cached_guess = request.cached_gjk_guess;
+      this->support_func_cached_guess = request.cached_support_func_guess;
     }
-
+    this->gjk_tolerance = request.gjk_tolerance;
+    this->gjk_max_iterations = request.gjk_max_iterations;
     // The distance upper bound should be at least greater to the requested
     // security margin. Otherwise, we will likely miss some collisions.
-    distance_upper_bound = (std::max)(
+    this->distance_upper_bound = (std::max)(
         0., (std::max)(request.distance_upper_bound, request.security_margin));
+    this->gjk_variant = request.gjk_variant;
+    this->gjk_convergence_criterion = request.gjk_convergence_criterion;
+    this->gjk_convergence_criterion_type =
+        request.gjk_convergence_criterion_type;
+
+    // ---------------------
+    // EPA settings
+    this->epa_max_iterations = request.epa_max_iterations;
+    this->epa_tolerance = request.epa_tolerance;
+
+    // ---------------------
+    // Reset GJK and EPA status
+    this->gjk.status = details::GJK::Status::DidNotRun;
+    this->epa.status = details::EPA::Status::DidNotRun;
   }
 
   /// @brief Copy constructor
@@ -451,280 +242,477 @@ struct HPP_FCL_DLLAPI GJKSolver {
   HPP_FCL_COMPILER_DIAGNOSTIC_PUSH
   HPP_FCL_COMPILER_DIAGNOSTIC_IGNORED_DEPRECECATED_DECLARATIONS
   bool operator==(const GJKSolver& other) const {
-    return epa_max_face_num == other.epa_max_face_num &&
-           epa_max_vertex_num == other.epa_max_vertex_num &&
-           epa_max_iterations == other.epa_max_iterations &&
-           epa_tolerance == other.epa_tolerance &&
-           gjk_max_iterations == other.gjk_max_iterations &&
-           enable_cached_guess ==
-               other.enable_cached_guess &&  // TODO: use gjk_initial_guess
-                                             // instead
-           cached_guess == other.cached_guess &&
-           support_func_cached_guess == other.support_func_cached_guess &&
-           distance_upper_bound == other.distance_upper_bound &&
-           gjk_initial_guess == other.gjk_initial_guess &&
-           gjk_variant == other.gjk_variant &&
-           gjk_convergence_criterion == other.gjk_convergence_criterion &&
-           gjk_convergence_criterion_type ==
-               other.gjk_convergence_criterion_type;
+    return this->enable_cached_guess ==
+               other.enable_cached_guess &&  // use gjk_initial_guess instead
+           this->cached_guess == other.cached_guess &&
+           this->support_func_cached_guess == other.support_func_cached_guess &&
+           this->gjk_max_iterations == other.gjk_max_iterations &&
+           this->gjk_tolerance == other.gjk_tolerance &&
+           this->distance_upper_bound == other.distance_upper_bound &&
+           this->gjk_variant == other.gjk_variant &&
+           this->gjk_convergence_criterion == other.gjk_convergence_criterion &&
+           this->gjk_convergence_criterion_type ==
+               other.gjk_convergence_criterion_type &&
+           this->gjk_initial_guess == other.gjk_initial_guess &&
+           this->epa_max_iterations == other.epa_max_iterations &&
+           this->epa_tolerance == other.epa_tolerance;
   }
   HPP_FCL_COMPILER_DIAGNOSTIC_POP
 
   bool operator!=(const GJKSolver& other) const { return !(*this == other); }
 
-  /// @brief maximum number of simplex face used in EPA algorithm
-  unsigned int epa_max_face_num;
+  /// @brief Helper to return the precision of the solver on the distance
+  /// estimate, depending on whether or not `compute_penetration` is true.
+  FCL_REAL getDistancePrecision(const bool compute_penetration) const {
+    return compute_penetration
+               ? (std::max)(this->gjk_tolerance, this->epa_tolerance)
+               : this->gjk_tolerance;
+  }
 
-  /// @brief maximum number of simplex vertex used in EPA algorithm
-  unsigned int epa_max_vertex_num;
+  /// @brief Uses GJK and EPA to compute the distance between two shapes.
+  /// @param `s1` the first shape.
+  /// @param `tf1` the transformation of the first shape.
+  /// @param `s2` the second shape.
+  /// @param `tf2` the transformation of the second shape.
+  /// @param `compute_penetration` if true and GJK finds the shape in collision,
+  /// the EPA algorithm is also ran to compute penetration information.
+  /// @param[out] `p1` the witness point on the first shape.
+  /// @param[out] `p2` the witness point on the second shape.
+  /// @param[out] `normal` the normal of the collision, pointing from the first
+  /// to the second shape.
+  /// @return the estimate of the distance between the two shapes.
+  ///
+  /// @note: if `this->distance_upper_bound` is set to a positive value, GJK
+  /// will early stop if it finds the distance to be above this value. The
+  /// distance returned by `this->shapeDistance` will be a lower bound on the
+  /// distance between the two shapes.
+  ///
+  /// @note: the variables `this->gjk.status` and `this->epa.status` can be used
+  /// to examine the status of GJK and EPA.
+  ///
+  /// @note: GJK and EPA give an estimate of the distance between the two
+  /// shapes. This estimate is precise up to the tolerance of the algorithms:
+  ///   - If `compute_penetration` is false, the distance is precise up to
+  ///     `gjk_tolerance`.
+  ///   - If `compute_penetration` is true, the distance is precise up to
+  ///     `std::max(gjk_tolerance, epa_tolerance)`
+  /// It's up to the user to decide whether the shapes are in collision or not,
+  /// based on that estimate.
+  template <typename S1, typename S2>
+  FCL_REAL shapeDistance(const S1& s1, const Transform3f& tf1, const S2& s2,
+                         const Transform3f& tf2, const bool compute_penetration,
+                         Vec3f& p1, Vec3f& p2, Vec3f& normal) const {
+    constexpr bool relative_transformation_already_computed = false;
+    FCL_REAL distance;
+    this->runGJKAndEPA(s1, tf1, s2, tf2, compute_penetration, distance, p1, p2,
+                       normal, relative_transformation_already_computed);
+    return distance;
+  }
 
-  /// @brief maximum number of iterations used for EPA iterations
-  unsigned int epa_max_iterations;
+  /// @brief Partial specialization of `shapeDistance` for the case where the
+  /// second shape is a triangle. It is more efficient to pre-compute the
+  /// relative transformation between the two shapes before calling GJK/EPA.
+  template <typename S1>
+  FCL_REAL shapeDistance(const S1& s1, const Transform3f& tf1,
+                         const TriangleP& s2, const Transform3f& tf2,
+                         const bool compute_penetration, Vec3f& p1, Vec3f& p2,
+                         Vec3f& normal) const {
+    const Transform3f tf_1M2(tf1.inverseTimes(tf2));
+    TriangleP tri(tf_1M2.transform(s2.a), tf_1M2.transform(s2.b),
+                  tf_1M2.transform(s2.c));
 
-  /// @brief the threshold used in EPA to stop iteration
-  FCL_REAL epa_tolerance;
+    constexpr bool relative_transformation_already_computed = true;
+    FCL_REAL distance;
+    this->runGJKAndEPA(s1, tf1, tri, tf_1M2, compute_penetration, distance, p1,
+                       p2, normal, relative_transformation_already_computed);
+    return distance;
+  }
 
-  /// @brief the threshold used in GJK to stop iteration
-  mutable FCL_REAL gjk_tolerance;
+  /// @brief See other partial template specialization of shapeDistance above.
+  template <typename S2>
+  FCL_REAL shapeDistance(const TriangleP& s1, const Transform3f& tf1,
+                         const S2& s2, const Transform3f& tf2,
+                         const bool compute_penetration, Vec3f& p1, Vec3f& p2,
+                         Vec3f& normal) const {
+    FCL_REAL distance = this->shapeDistance<S2>(
+        s2, tf2, s1, tf1, compute_penetration, p2, p1, normal);
+    normal = -normal;
+    return distance;
+  }
 
-  /// @brief maximum number of iterations used for GJK iterations
-  mutable size_t gjk_max_iterations;
+ protected:
+  /// @brief initialize GJK.
+  /// This method assumes `minkowski_difference` has been set.
+  template <typename S1, typename S2>
+  void getGJKInitialGuess(const S1& s1, const S2& s2, Vec3f& guess,
+                          support_func_guess_t& support_hint,
+                          const Vec3f& default_guess = Vec3f(1, 0, 0)) const {
+    switch (gjk_initial_guess) {
+      case GJKInitialGuess::DefaultGuess:
+        guess = default_guess;
+        support_hint.setZero();
+        break;
+      case GJKInitialGuess::CachedGuess:
+        guess = this->cached_guess;
+        support_hint = this->support_func_cached_guess;
+        break;
+      case GJKInitialGuess::BoundingVolumeGuess:
+        if (s1.aabb_local.volume() < 0 || s2.aabb_local.volume() < 0) {
+          HPP_FCL_THROW_PRETTY(
+              "computeLocalAABB must have been called on the shapes before "
+              "using "
+              "GJKInitialGuess::BoundingVolumeGuess.",
+              std::logic_error);
+        }
+        guess.noalias() =
+            s1.aabb_local.center() -
+            (this->minkowski_difference.oR1 * s2.aabb_local.center() +
+             this->minkowski_difference.ot1);
+        support_hint.setZero();
+        break;
+      default:
+        HPP_FCL_THROW_PRETTY("Wrong initial guess for GJK.", std::logic_error);
+    }
+    // TODO: use gjk_initial_guess instead
+    HPP_FCL_COMPILER_DIAGNOSTIC_PUSH
+    HPP_FCL_COMPILER_DIAGNOSTIC_IGNORED_DEPRECECATED_DECLARATIONS
+    if (this->enable_cached_guess) {
+      guess = this->cached_guess;
+      support_hint = this->support_func_cached_guess;
+    }
+    HPP_FCL_COMPILER_DIAGNOSTIC_POP
+  }
 
-  /// @brief Whether smart guess can be provided
-  /// @Deprecated Use gjk_initial_guess instead
-  HPP_FCL_DEPRECATED_MESSAGE("Use gjk_initial_guess instead")
-  mutable bool enable_cached_guess;
+  /// @brief Runs the GJK algorithm.
+  /// @param `s1` the first shape.
+  /// @param `tf1` the transformation of the first shape.
+  /// @param `s2` the second shape.
+  /// @param `tf2` the transformation of the second shape.
+  /// @param `compute_penetration` if true and if the shapes are in found in
+  /// collision, the EPA algorithm is also ran to compute penetration
+  /// information.
+  /// @param[out] `distance` the distance between the two shapes.
+  /// @param[out] `p1` the witness point on the first shape.
+  /// @param[out] `p2` the witness point on the second shape.
+  /// @param[out] `normal` the normal of the collision, pointing from the first
+  /// to the second shape.
+  /// @param `relative_transformation_already_computed` whether the relative
+  /// transformation between the two shapes has already been computed.
+  /// @tparam SupportOptions, see `MinkowskiDiff::set`. Whether the support
+  /// computations should take into account the shapes' swept-sphere radii
+  /// during the iterations of GJK and EPA. Please leave this default value to
+  /// `false` unless you know what you are doing. This template parameter is
+  /// only used for debugging/testing purposes. In short, there is no need to
+  /// take into account the swept sphere radius when computing supports in the
+  /// iterations of GJK and EPA. GJK and EPA will correct the solution once they
+  /// have converged.
+  /// @return the estimate of the distance between the two shapes.
+  ///
+  /// @note: The variables `this->gjk.status` and `this->epa.status` can be used
+  /// to examine the status of GJK and EPA.
+  template <typename S1, typename S2,
+            int _SupportOptions = details::SupportOptions::NoSweptSphere>
+  void runGJKAndEPA(
+      const S1& s1, const Transform3f& tf1, const S2& s2,
+      const Transform3f& tf2, const bool compute_penetration,
+      FCL_REAL& distance, Vec3f& p1, Vec3f& p2, Vec3f& normal,
+      const bool relative_transformation_already_computed = false) const {
+    // Reset internal state of GJK algorithm
+    if (relative_transformation_already_computed)
+      this->minkowski_difference.set<_SupportOptions>(&s1, &s2);
+    else
+      this->minkowski_difference.set<_SupportOptions>(&s1, &s2, tf1, tf2);
+    this->gjk.reset(this->gjk_max_iterations, this->gjk_tolerance);
+    this->gjk.setDistanceEarlyBreak(this->distance_upper_bound);
+    this->gjk.gjk_variant = this->gjk_variant;
+    this->gjk.convergence_criterion = this->gjk_convergence_criterion;
+    this->gjk.convergence_criterion_type = this->gjk_convergence_criterion_type;
+    this->epa.status = details::EPA::Status::DidNotRun;
 
-  /// @brief smart guess
-  mutable Vec3f cached_guess;
+    // Get initial guess for GJK: default, cached or bounding volume guess
+    Vec3f guess;
+    support_func_guess_t support_hint;
+    getGJKInitialGuess(*(this->minkowski_difference.shapes[0]),
+                       *(this->minkowski_difference.shapes[1]), guess,
+                       support_hint);
 
-  /// @brief which warm start to use for GJK
-  mutable GJKInitialGuess gjk_initial_guess;
+    this->gjk.evaluate(this->minkowski_difference, guess, support_hint);
+    HPP_FCL_COMPILER_DIAGNOSTIC_PUSH
+    HPP_FCL_COMPILER_DIAGNOSTIC_IGNORED_DEPRECECATED_DECLARATIONS
+    if (this->gjk_initial_guess == GJKInitialGuess::CachedGuess ||
+        this->enable_cached_guess) {
+      this->cached_guess = this->gjk.getGuessFromSimplex();
+      this->support_func_cached_guess = this->gjk.support_hint;
+    }
+    HPP_FCL_COMPILER_DIAGNOSTIC_POP
 
-  /// @brief Variant to use for the GJK algorithm
-  mutable GJKVariant gjk_variant;
+    const FCL_REAL dummy_precision =
+        3 * std::sqrt(std::numeric_limits<FCL_REAL>::epsilon());
+    HPP_FCL_UNUSED_VARIABLE(dummy_precision);
 
-  /// @brief Criterion used to stop GJK
-  mutable GJKConvergenceCriterion gjk_convergence_criterion;
+    switch (this->gjk.status) {
+      case details::GJK::DidNotRun:
+        HPP_FCL_ASSERT(false, "GJK did not run. It should have!",
+                       std::logic_error);
+        distance = -(std::numeric_limits<FCL_REAL>::max)();
+        p1 = p2 = normal =
+            Vec3f::Constant(std::numeric_limits<FCL_REAL>::quiet_NaN());
+        break;
+      case details::GJK::Failed:
+        //
+        // GJK ran out of iterations.
+        HPP_FCL_LOG_WARNING("GJK ran out of iterations.");
+        GJKExtractWitnessPointsAndNormal(tf1, distance, p1, p2, normal);
+        break;
+      case details::GJK::NoCollisionEarlyStopped:
+        //
+        // Case where GJK early stopped because the distance was found to be
+        // above the `distance_upper_bound`.
+        // The two witness points have no meaning.
+        GJKEarlyStopExtractWitnessPointsAndNormal(tf1, distance, p1, p2,
+                                                  normal);
+        HPP_FCL_ASSERT(
+            distance >= this->gjk.distance_upper_bound - dummy_precision,
+            "The distance should be bigger than GJK's "
+            "`distance_upper_bound`.",
+            std::logic_error);
+        break;
+      case details::GJK::NoCollision:
+        //
+        // Case where GJK converged and proved that the shapes are not in
+        // collision, i.e their distance is above GJK's tolerance (default
+        // 1e-6).
+        GJKExtractWitnessPointsAndNormal(tf1, distance, p1, p2, normal);
+        HPP_FCL_ASSERT(std::abs((p1 - p2).norm() - distance) <=
+                           this->gjk.getTolerance() + dummy_precision,
+                       "The distance found by GJK should coincide with the "
+                       "distance between the closest points.",
+                       std::logic_error);
+        break;
+      //
+      // Next are the cases where GJK found the shapes to be in collision, i.e.
+      // their distance is below GJK's tolerance (default 1e-6).
+      case details::GJK::CollisionWithPenetrationInformation:
+        GJKExtractWitnessPointsAndNormal(tf1, distance, p1, p2, normal);
+        HPP_FCL_ASSERT(distance <= this->gjk.getTolerance() + dummy_precision,
+                       "The distance found by GJK should be negative or at "
+                       "least below GJK's tolerance.",
+                       std::logic_error);
+        break;
+      case details::GJK::Collision:
+        if (!compute_penetration) {
+          // Skip EPA and set the witness points and the normal to nans.
+          GJKCollisionExtractWitnessPointsAndNormal(tf1, distance, p1, p2,
+                                                    normal);
+        } else {
+          //
+          // GJK was not enough to recover the penetration information.
+          // We need to run the EPA algorithm to find the witness points,
+          // penetration depth and the normal.
 
-  /// @brief Relative or absolute
-  mutable GJKConvergenceCriterionType gjk_convergence_criterion_type;
+          // Reset EPA algorithm. Potentially allocate memory if
+          // `epa_max_face_num` or `epa_max_vertex_num` are bigger than EPA's
+          // current storage.
+          this->epa.reset(this->epa_max_iterations, this->epa_tolerance);
 
-  /// @brief smart guess for the support function
-  mutable support_func_guess_t support_func_cached_guess;
+          // TODO: understand why EPA's performance is so bad on cylinders and
+          // cones.
+          this->epa.evaluate(this->gjk, -guess);
 
-  /// @brief Distance above which the GJK solver stoppes its computations and
-  /// processes to an early stopping.
-  ///        The two witness points are incorrect, but with the guaranty that
-  ///        the two shapes have a distance greather than distance_upper_bound.
-  mutable FCL_REAL distance_upper_bound;
+          switch (epa.status) {
+            //
+            // In the following switch cases, until the "Valid" case,
+            // EPA either ran out of iterations, of faces or of vertices.
+            // The depth, witness points and the normal are still valid,
+            // simply not at the precision of EPA's tolerance.
+            // The flag `HPP_FCL_ENABLE_LOGGING` enables feebdack on these
+            // cases.
+            //
+            // TODO: Remove OutOfFaces and OutOfVertices statuses and simply
+            // compute the upper bound on max faces and max vertices as a
+            // function of the number of iterations.
+            case details::EPA::OutOfFaces:
+              HPP_FCL_LOG_WARNING("EPA ran out of faces.");
+              EPAExtractWitnessPointsAndNormal(tf1, distance, p1, p2, normal);
+              break;
+            case details::EPA::OutOfVertices:
+              HPP_FCL_LOG_WARNING("EPA ran out of vertices.");
+              EPAExtractWitnessPointsAndNormal(tf1, distance, p1, p2, normal);
+              break;
+            case details::EPA::Failed:
+              HPP_FCL_LOG_WARNING("EPA ran out of iterations.");
+              EPAExtractWitnessPointsAndNormal(tf1, distance, p1, p2, normal);
+              break;
+            case details::EPA::Valid:
+            case details::EPA::AccuracyReached:
+              HPP_FCL_ASSERT(
+                  -epa.depth <= epa.getTolerance() + dummy_precision,
+                  "EPA's penetration distance should be negative (or "
+                  "at least below EPA's tolerance).",
+                  std::logic_error);
+              EPAExtractWitnessPointsAndNormal(tf1, distance, p1, p2, normal);
+              break;
+            case details::EPA::Degenerated:
+              HPP_FCL_LOG_WARNING(
+                  "EPA warning: created a polytope with a degenerated face.");
+              EPAExtractWitnessPointsAndNormal(tf1, distance, p1, p2, normal);
+              break;
+            case details::EPA::NonConvex:
+              HPP_FCL_LOG_WARNING(
+                  "EPA warning: EPA got called onto non-convex shapes.");
+              EPAExtractWitnessPointsAndNormal(tf1, distance, p1, p2, normal);
+              break;
+            case details::EPA::InvalidHull:
+              HPP_FCL_LOG_WARNING("EPA warning: created an invalid polytope.");
+              EPAExtractWitnessPointsAndNormal(tf1, distance, p1, p2, normal);
+              break;
+            case details::EPA::DidNotRun:
+              HPP_FCL_ASSERT(false, "EPA did not run. It should have!",
+                             std::logic_error);
+              HPP_FCL_LOG_ERROR("EPA error: did not run. It should have.");
+              EPAFailedExtractWitnessPointsAndNormal(tf1, distance, p1, p2,
+                                                     normal);
+              break;
+            case details::EPA::FallBack:
+              HPP_FCL_ASSERT(
+                  false,
+                  "EPA went into fallback mode. It should never do that.",
+                  std::logic_error);
+              HPP_FCL_LOG_ERROR("EPA error: FallBack.");
+              EPAFailedExtractWitnessPointsAndNormal(tf1, distance, p1, p2,
+                                                     normal);
+              break;
+          }
+        }
+        break;  // End of case details::GJK::Collision
+    }
+  }
 
- public:
-  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+  void GJKEarlyStopExtractWitnessPointsAndNormal(const Transform3f& tf1,
+                                                 FCL_REAL& distance, Vec3f& p1,
+                                                 Vec3f& p2,
+                                                 Vec3f& normal) const {
+    HPP_FCL_UNUSED_VARIABLE(tf1);
+    distance = this->gjk.distance;
+    p1 = p2 = normal =
+        Vec3f::Constant(std::numeric_limits<FCL_REAL>::quiet_NaN());
+    // If we absolutely want to return some witness points, we could use
+    // the following code (or simply merge the early stopped case with the
+    // valid case below):
+    // gjk.getWitnessPointsAndNormal(minkowski_difference, p1, p2, normal);
+    // p1 = tf1.transform(p1);
+    // p2 = tf1.transform(p2);
+    // normal = tf1.getRotation() * normal;
+  }
+
+  void GJKExtractWitnessPointsAndNormal(const Transform3f& tf1,
+                                        FCL_REAL& distance, Vec3f& p1,
+                                        Vec3f& p2, Vec3f& normal) const {
+    // Apart from early stopping, there are two cases where GJK says there is no
+    // collision:
+    // 1. GJK proved the distance is above its tolerance (default 1e-6).
+    // 2. GJK ran out of iterations.
+    // In any case, `gjk.ray`'s norm is bigger than GJK's tolerance and thus
+    // it can safely be normalized.
+    const FCL_REAL dummy_precision =
+        3 * std::sqrt(std::numeric_limits<FCL_REAL>::epsilon());
+    HPP_FCL_UNUSED_VARIABLE(dummy_precision);
+
+    HPP_FCL_ASSERT(
+        this->gjk.ray.norm() > this->gjk.getTolerance() - dummy_precision,
+        "The norm of GJK's ray should be bigger than GJK's tolerance.",
+        std::logic_error);
+
+    distance = this->gjk.distance;
+    // TODO: On degenerated case, the closest points may be non-unique.
+    // (i.e. an object face normal is colinear to `gjk.ray`)
+    gjk.getWitnessPointsAndNormal(this->minkowski_difference, p1, p2, normal);
+    Vec3f p = tf1.transform(0.5 * (p1 + p2));
+    normal = tf1.getRotation() * normal;
+    p1.noalias() = p - 0.5 * distance * normal;
+    p2.noalias() = p + 0.5 * distance * normal;
+  }
+
+  void GJKCollisionExtractWitnessPointsAndNormal(const Transform3f& tf1,
+                                                 FCL_REAL& distance, Vec3f& p1,
+                                                 Vec3f& p2,
+                                                 Vec3f& normal) const {
+    HPP_FCL_UNUSED_VARIABLE(tf1);
+    const FCL_REAL dummy_precision =
+        3 * std::sqrt(std::numeric_limits<FCL_REAL>::epsilon());
+    HPP_FCL_UNUSED_VARIABLE(dummy_precision);
+
+    HPP_FCL_ASSERT(
+        this->gjk.distance <= this->gjk.getTolerance() + dummy_precision,
+        "The distance should be lower than GJK's tolerance.", std::logic_error);
+
+    distance = this->gjk.distance;
+    p1 = p2 = normal =
+        Vec3f::Constant(std::numeric_limits<FCL_REAL>::quiet_NaN());
+  }
+
+  void EPAExtractWitnessPointsAndNormal(const Transform3f& tf1,
+                                        FCL_REAL& distance, Vec3f& p1,
+                                        Vec3f& p2, Vec3f& normal) const {
+    distance = (std::min)(0., -this->epa.depth);
+    this->epa.getWitnessPointsAndNormal(this->minkowski_difference, p1, p2,
+                                        normal);
+    // The following is very important to understand why EPA can sometimes
+    // return a normal that is not colinear to the vector $p_1 - p_2$ when
+    // working with tolerances like $\epsilon = 10^{-3}$.
+    // It can be resumed with a simple idea:
+    //     EPA is an algorithm meant to find the penetration depth and the
+    //     normal. It is not meant to find the closest points.
+    // Again, the issue here is **not** the normal, it's $p_1$ and $p_2$.
+    //
+    // More details:
+    // We'll denote $S_1$ and $S_2$ the two shapes, $n$ the normal and $p_1$ and
+    // $p_2$ the witness points. In theory, when EPA converges to $\epsilon =
+    // 0$, the normal and witness points verify the following property (P):
+    //   - $p_1 \in \partial \sigma_{S_1}(n)$,
+    //   - $p_2 \in \partial \sigma_{S_2}(-n),
+    // where $\sigma_{S_1}$ and $\sigma_{S_2}$ are the support functions of
+    // $S_1$ and $S_2$. The $\partial \sigma(n)$ simply denotes the support set
+    // of the support function in the direction $n$. (Note: I am leaving out the
+    // details of frame choice for the support function, to avoid making the
+    // mathematical notation too heavy.)
+    // --> In practice, EPA converges to $\epsilon > 0$.
+    // On polytopes and the likes, this does not change much and the property
+    // given above is still valid.
+    // --> However, this is very different on curved surfaces, such as
+    // ellipsoids, cylinders, cones, capsules etc. For these shapes, converging
+    // at $\epsilon = 10^{-6}$ or to $\epsilon = 10^{-3}$ does not change the
+    // normal much, but the property (P) given above is no longer valid, which
+    // means that the points $p_1$ and $p_2$ do not necessarily belong to the
+    // support sets in the direction of $n$ and thus $n$ and $p_1 - p_2$ are not
+    // colinear.
+    //
+    // Do not panic! This is fine.
+    // Although the property above is not verified, it's almost verified,
+    // meaning that $p_1$ and $p_2$ belong to support sets in directions that
+    // are very close to $n$.
+    //
+    // Solution to compute better $p_1$ and $p_2$:
+    // We compute the middle points of the current $p_1$ and $p_2$ and we use
+    // the normal and the distance given by EPA to compute the new $p_1$ and
+    // $p_2$.
+    Vec3f p = tf1.transform(0.5 * (p1 + p2));
+    normal = tf1.getRotation() * normal;
+    p1.noalias() = p - 0.5 * distance * normal;
+    p2.noalias() = p + 0.5 * distance * normal;
+  }
+
+  void EPAFailedExtractWitnessPointsAndNormal(const Transform3f& tf1,
+                                              FCL_REAL& distance, Vec3f& p1,
+                                              Vec3f& p2, Vec3f& normal) const {
+    HPP_FCL_UNUSED_VARIABLE(tf1);
+    distance = -(std::numeric_limits<FCL_REAL>::max)();
+    p1 = p2 = normal =
+        Vec3f::Constant(std::numeric_limits<FCL_REAL>::quiet_NaN());
+  }
 };
 
-template <>
-HPP_FCL_DLLAPI bool GJKSolver::shapeTriangleInteraction(
-    const Sphere& s, const Transform3f& tf1, const Vec3f& P1, const Vec3f& P2,
-    const Vec3f& P3, const Transform3f& tf2, FCL_REAL& distance, Vec3f& p1,
-    Vec3f& p2, Vec3f& normal) const;
-
-template <>
-HPP_FCL_DLLAPI bool GJKSolver::shapeTriangleInteraction(
-    const Halfspace& s, const Transform3f& tf1, const Vec3f& P1,
-    const Vec3f& P2, const Vec3f& P3, const Transform3f& tf2,
-    FCL_REAL& distance, Vec3f& p1, Vec3f& p2, Vec3f& normal) const;
-
-template <>
-HPP_FCL_DLLAPI bool GJKSolver::shapeTriangleInteraction(
-    const Plane& s, const Transform3f& tf1, const Vec3f& P1, const Vec3f& P2,
-    const Vec3f& P3, const Transform3f& tf2, FCL_REAL& distance, Vec3f& p1,
-    Vec3f& p2, Vec3f& normal) const;
-
-#define SHAPE_INTERSECT_SPECIALIZATION_BASE(S1, S2)                 \
-  template <>                                                       \
-  HPP_FCL_DLLAPI bool GJKSolver::shapeIntersect<S1, S2>(            \
-      const S1& s1, const Transform3f& tf1, const S2& s2,           \
-      const Transform3f& tf2, FCL_REAL& distance_lower_bound, bool, \
-      Vec3f* contact_points, Vec3f* normal) const
-
-#define SHAPE_INTERSECT_SPECIALIZATION(S1, S2) \
-  SHAPE_INTERSECT_SPECIALIZATION_BASE(S1, S2); \
-  SHAPE_INTERSECT_SPECIALIZATION_BASE(S2, S1)
-
-SHAPE_INTERSECT_SPECIALIZATION(Sphere, Capsule);
-SHAPE_INTERSECT_SPECIALIZATION_BASE(Sphere, Sphere);
-SHAPE_INTERSECT_SPECIALIZATION(Sphere, Box);
-SHAPE_INTERSECT_SPECIALIZATION(Sphere, Halfspace);
-SHAPE_INTERSECT_SPECIALIZATION(Sphere, Plane);
-
-SHAPE_INTERSECT_SPECIALIZATION(Halfspace, Box);
-SHAPE_INTERSECT_SPECIALIZATION(Halfspace, Capsule);
-SHAPE_INTERSECT_SPECIALIZATION(Halfspace, Cylinder);
-SHAPE_INTERSECT_SPECIALIZATION(Halfspace, Cone);
-SHAPE_INTERSECT_SPECIALIZATION(Halfspace, Plane);
-
-SHAPE_INTERSECT_SPECIALIZATION(Plane, Box);
-SHAPE_INTERSECT_SPECIALIZATION(Plane, Capsule);
-SHAPE_INTERSECT_SPECIALIZATION(Plane, Cylinder);
-SHAPE_INTERSECT_SPECIALIZATION(Plane, Cone);
-
-#undef SHAPE_INTERSECT_SPECIALIZATION
-#undef SHAPE_INTERSECT_SPECIALIZATION_BASE
-
-#define SHAPE_DISTANCE_SPECIALIZATION_BASE(S1, S2)                  \
-  template <>                                                       \
-  HPP_FCL_DLLAPI bool GJKSolver::shapeDistance<S1, S2>(             \
-      const S1& s1, const Transform3f& tf1, const S2& s2,           \
-      const Transform3f& tf2, FCL_REAL& dist, Vec3f& p1, Vec3f& p2, \
-      Vec3f& normal) const
-
-#define SHAPE_DISTANCE_SPECIALIZATION(S1, S2) \
-  SHAPE_DISTANCE_SPECIALIZATION_BASE(S1, S2); \
-  SHAPE_DISTANCE_SPECIALIZATION_BASE(S2, S1)
-
-SHAPE_DISTANCE_SPECIALIZATION(Sphere, Capsule);
-SHAPE_DISTANCE_SPECIALIZATION(Sphere, Box);
-SHAPE_DISTANCE_SPECIALIZATION(Sphere, Cylinder);
-SHAPE_DISTANCE_SPECIALIZATION_BASE(Sphere, Sphere);
-SHAPE_DISTANCE_SPECIALIZATION_BASE(Capsule, Capsule);
-SHAPE_DISTANCE_SPECIALIZATION_BASE(TriangleP, TriangleP);
-
-#undef SHAPE_DISTANCE_SPECIALIZATION
-#undef SHAPE_DISTANCE_SPECIALIZATION_BASE
-
-#if !(__cplusplus >= 201103L || (defined(_MSC_VER) && _MSC_VER >= 1600))
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wc99-extensions"
-#endif
-/// \name Shape intersection specializations
-/// \{
-
-// param doc is the doxygen detailled description (should be enclosed in /** */
-// and contain no dot for some obscure reasons).
-#define HPP_FCL_DECLARE_SHAPE_INTERSECT(Shape1, Shape2, doc)      \
-  /** @brief Fast implementation for Shape1-Shape2 collision. */  \
-  doc template <>                                                 \
-  HPP_FCL_DLLAPI bool GJKSolver::shapeIntersect<Shape1, Shape2>(  \
-      const Shape1& s1, const Transform3f& tf1, const Shape2& s2, \
-      const Transform3f& tf2, FCL_REAL& distance_lower_bound,     \
-      bool enable_penetration, Vec3f* contact_points, Vec3f* normal) const
-#define HPP_FCL_DECLARE_SHAPE_INTERSECT_SELF(Shape, doc) \
-  HPP_FCL_DECLARE_SHAPE_INTERSECT(Shape, Shape, doc)
-#define HPP_FCL_DECLARE_SHAPE_INTERSECT_PAIR(Shape1, Shape2, doc) \
-  HPP_FCL_DECLARE_SHAPE_INTERSECT(Shape1, Shape2, doc);           \
-  HPP_FCL_DECLARE_SHAPE_INTERSECT(Shape2, Shape1, doc)
-
-HPP_FCL_DECLARE_SHAPE_INTERSECT_SELF(Sphere, );
-HPP_FCL_DECLARE_SHAPE_INTERSECT_PAIR(Sphere, Capsule, );
-HPP_FCL_DECLARE_SHAPE_INTERSECT_PAIR(Sphere, Halfspace, );
-HPP_FCL_DECLARE_SHAPE_INTERSECT_PAIR(Sphere, Plane, );
-
-template <>
-HPP_FCL_DLLAPI bool GJKSolver::shapeIntersect<Box, Sphere>(
-    const Box& s1, const Transform3f& tf1, const Sphere& s2,
-    const Transform3f& tf2, FCL_REAL& distance_lower_bound,
-    bool enable_penetration, Vec3f* contact_points, Vec3f* normal) const;
-
-#ifdef IS_DOXYGEN  // for doxygen only
-/** \todo currently disabled and to re-enable it, API of function
- *  \ref obbDisjointAndLowerBoundDistance should be modified.
- *  */
-template <>
-HPP_FCL_DLLAPI bool GJKSolver::shapeIntersect<Box, Box>(
-    const Box& s1, const Transform3f& tf1, const Box& s2,
-    const Transform3f& tf2, FCL_REAL& distance_lower_bound,
-    bool enable_penetration, Vec3f* contact_points, Vec3f* normal) const;
-#endif
-// HPP_FCL_DECLARE_SHAPE_INTERSECT_SELF(Box,);
-HPP_FCL_DECLARE_SHAPE_INTERSECT_PAIR(Box, Halfspace, );
-HPP_FCL_DECLARE_SHAPE_INTERSECT_PAIR(Box, Plane, );
-
-HPP_FCL_DECLARE_SHAPE_INTERSECT_PAIR(Capsule, Halfspace, );
-HPP_FCL_DECLARE_SHAPE_INTERSECT_PAIR(Capsule, Plane, );
-
-HPP_FCL_DECLARE_SHAPE_INTERSECT_PAIR(Cylinder, Halfspace, );
-HPP_FCL_DECLARE_SHAPE_INTERSECT_PAIR(Cylinder, Plane, );
-
-HPP_FCL_DECLARE_SHAPE_INTERSECT_PAIR(Cone, Halfspace, );
-HPP_FCL_DECLARE_SHAPE_INTERSECT_PAIR(Cone, Plane, );
-
-HPP_FCL_DECLARE_SHAPE_INTERSECT_SELF(Halfspace, );
-
-HPP_FCL_DECLARE_SHAPE_INTERSECT_SELF(Plane, );
-HPP_FCL_DECLARE_SHAPE_INTERSECT_PAIR(Plane, Halfspace, );
-
-#undef HPP_FCL_DECLARE_SHAPE_INTERSECT
-#undef HPP_FCL_DECLARE_SHAPE_INTERSECT_SELF
-#undef HPP_FCL_DECLARE_SHAPE_INTERSECT_PAIR
-
-/// \}
-
-/// \name Shape triangle interaction specializations
-/// \{
-
-// param doc is the doxygen detailled description (should be enclosed in /** */
-// and contain no dot for some obscure reasons).
-#define HPP_FCL_DECLARE_SHAPE_TRIANGLE(Shape, doc)                  \
-  /** @brief Fast implementation for Shape-Triangle interaction. */ \
-  doc template <>                                                   \
-  HPP_FCL_DLLAPI bool GJKSolver::shapeTriangleInteraction<Shape>(   \
-      const Shape& s, const Transform3f& tf1, const Vec3f& P1,      \
-      const Vec3f& P2, const Vec3f& P3, const Transform3f& tf2,     \
-      FCL_REAL& distance, Vec3f& p1, Vec3f& p2, Vec3f& normal) const
-
-HPP_FCL_DECLARE_SHAPE_TRIANGLE(Sphere, );
-HPP_FCL_DECLARE_SHAPE_TRIANGLE(Halfspace, );
-HPP_FCL_DECLARE_SHAPE_TRIANGLE(Plane, );
-
-#undef HPP_FCL_DECLARE_SHAPE_TRIANGLE
-
-/// \}
-
-/// \name Shape distance specializations
-/// \{
-
-// param doc is the doxygen detailled description (should be enclosed in /** */
-// and contain no dot for some obscure reasons).
-#define HPP_FCL_DECLARE_SHAPE_DISTANCE(Shape1, Shape2, doc)         \
-  /** @brief Fast implementation for Shape1-Shape2 distance. */     \
-  doc template <>                                                   \
-  bool HPP_FCL_DLLAPI GJKSolver::shapeDistance<Shape1, Shape2>(     \
-      const Shape1& s1, const Transform3f& tf1, const Shape2& s2,   \
-      const Transform3f& tf2, FCL_REAL& dist, Vec3f& p1, Vec3f& p2, \
-      Vec3f& normal) const
-#define HPP_FCL_DECLARE_SHAPE_DISTANCE_SELF(Shape, doc) \
-  HPP_FCL_DECLARE_SHAPE_DISTANCE(Shape, Shape, doc)
-#define HPP_FCL_DECLARE_SHAPE_DISTANCE_PAIR(Shape1, Shape2, doc) \
-  HPP_FCL_DECLARE_SHAPE_DISTANCE(Shape1, Shape2, doc);           \
-  HPP_FCL_DECLARE_SHAPE_DISTANCE(Shape2, Shape1, doc)
-
-HPP_FCL_DECLARE_SHAPE_DISTANCE_PAIR(Sphere, Box, );
-HPP_FCL_DECLARE_SHAPE_DISTANCE_PAIR(Sphere, Capsule, );
-HPP_FCL_DECLARE_SHAPE_DISTANCE_PAIR(Sphere, Cylinder, );
-HPP_FCL_DECLARE_SHAPE_DISTANCE_SELF(Sphere, );
-
-HPP_FCL_DECLARE_SHAPE_DISTANCE_SELF(
-    Capsule,
-    /** Closest points are based on two line-segments. */
-);
-
-HPP_FCL_DECLARE_SHAPE_DISTANCE_SELF(
-    TriangleP,
-    /** Do not run EPA algorithm to compute penetration depth. Use a dedicated
-       method. */
-);
-
-#undef HPP_FCL_DECLARE_SHAPE_DISTANCE
-#undef HPP_FCL_DECLARE_SHAPE_DISTANCE_SELF
-#undef HPP_FCL_DECLARE_SHAPE_DISTANCE_PAIR
-
-/// \}
-#if !(__cplusplus >= 201103L || (defined(_MSC_VER) && _MSC_VER >= 1600))
-#pragma GCC diagnostic pop
-#endif
 }  // namespace fcl
-
 }  // namespace hpp
 
 #endif

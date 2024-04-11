@@ -3,6 +3,7 @@
  *
  *  Copyright (c) 2011-2014, Willow Garage, Inc.
  *  Copyright (c) 2014-2015, Open Source Robotics Foundation
+ *  Copyright (c) 2021-2024, INRIA
  *  All rights reserved.
  *
  *  Redistribution and use in source and binary forms, with or without
@@ -48,10 +49,30 @@ namespace fcl {
 
 namespace details {
 
-/// @brief the support function for shape
-/// \param hint use to initialize the search when shape is a ConvexBase object.
-Vec3f getSupport(const ShapeBase* shape, const Vec3f& dir, bool dirIsNormalized,
-                 int& hint);
+/// @brief Options for the computation of support points.
+/// `NoSweptSphere` option is used when the support function is called
+/// by GJK or EPA. In this case, the swept sphere radius is not taken into
+/// account in the support function. It is used by GJK and EPA after they have
+/// converged to correct the solution.
+/// `WithSweptSphere` option is used when the support function is called
+/// directly by the user. In this case, the swept sphere radius is taken into
+/// account in the support function.
+enum SupportOptions {
+  NoSweptSphere = 0,
+  WithSweptSphere = 0x1,
+};
+
+/// @brief the support function for shape.
+/// @return argmax_{v in shape0} v.dot(dir).
+/// @param shape the shape.
+/// @param dir support direction.
+/// @param hint used to initialize the search when shape is a ConvexBase object.
+/// @tparam SupportOptions is a value of the SupportOptions enum. If set to
+/// `WithSweptSphere`, the support functions take into account the shapes' swept
+/// sphere radii. Please see `MinkowskiDiff::set(const ShapeBase*, const
+/// ShapeBase*)` for more details.
+template <int _SupportOptions = SupportOptions::NoSweptSphere>
+Vec3f getSupport(const ShapeBase* shape, const Vec3f& dir, int& hint);
 
 /// @brief Minkowski difference class of two shapes
 ///
@@ -64,6 +85,7 @@ struct HPP_FCL_DLLAPI MinkowskiDiff {
 
   struct ShapeData {
     std::vector<int8_t> visited;
+    Vec3f last_dir = Vec3f::Zero();
   };
 
   /// @brief Store temporary data for the computation of the support point for
@@ -78,16 +100,10 @@ struct HPP_FCL_DLLAPI MinkowskiDiff {
   /// such that @f$ p_in_0 = oR1 * p_in_1 + ot1 @f$.
   Vec3f ot1;
 
-  /// @brief The radius of the sphere swepted volume.
-  /// The 2 values correspond to the inflation of shape 0 and shape 1/
-  /// These inflation values are used for Sphere and Capsule.
-  Array2d inflation;
-
-  /// @brief Number of points in a Convex object from which using a logarithmic
-  /// support function is faster than a linear one.
-  /// It defaults to 32.
-  /// \note It must set before the call to \ref set.
-  int linear_log_convex_threshold;
+  /// @brief The radii of the sphere swepted around each shape of the Minkowski
+  /// difference. The 2 values correspond to the swept-sphere radius of shape 0
+  /// and shape 1.
+  Array2d swept_sphere_radius;
 
   /// @brief Wether or not to use the normalize heuristic in the GJK Nesterov
   /// acceleration. This setting is only applied if the Nesterov acceleration in
@@ -95,42 +111,86 @@ struct HPP_FCL_DLLAPI MinkowskiDiff {
   bool normalize_support_direction;
 
   typedef void (*GetSupportFunction)(const MinkowskiDiff& minkowskiDiff,
-                                     const Vec3f& dir, bool dirIsNormalized,
-                                     Vec3f& support0, Vec3f& support1,
+                                     const Vec3f& dir, Vec3f& support0,
+                                     Vec3f& support1,
                                      support_func_guess_t& hint,
                                      ShapeData data[2]);
   GetSupportFunction getSupportFunc;
 
-  MinkowskiDiff()
-      : linear_log_convex_threshold(32),
-        normalize_support_direction(false),
-        getSupportFunc(NULL) {}
+  MinkowskiDiff() : normalize_support_direction(false), getSupportFunc(NULL) {}
 
-  /// Set the two shapes,
-  /// assuming the relative transformation between them is identity.
+  /// @brief Set the two shapes, assuming the relative transformation between
+  /// them is identity.
+  /// @param shape0 the first shape.
+  /// @param shape1 the second shape.
+  /// @tparam SupportOptions is a value of the SupportOptions enum. If set to
+  /// `WithSweptSphere`, the support computation will take into account the
+  /// swept sphere radius of the shapes. If set to `NoSweptSphere`, where
+  /// this information is simply stored in the Minkowski's difference
+  /// `swept_sphere_radius` array. This array is then used to correct the
+  /// solution found when GJK or EPA have converged.
+  ///
+  /// @note In practice, there is no need to take into account the swept-sphere
+  /// radius in the iterations of GJK/EPA. It is in fact detrimental to the
+  /// convergence of both algos. This is because it makes corners and edges of
+  /// shapes look strictly convex to the algorithms, which leads to poor
+  /// convergence. This swept sphere template parameter is only here for
+  /// debugging purposes and for specific uses cases where the swept sphere
+  /// radius is needed in the support function. The rule is simple. When
+  /// interacting with GJK/EPA, the `SupportOptions` template
+  /// parameter should **always** be set to `NoSweptSphere` (except for
+  /// debugging or testing purposes). When working directly with the shapes
+  /// involved in the collision, and not relying on GJK/EPA, the
+  /// `SupportOptions` template parameter should be set to `WithSweptSphere`.
+  /// This is for example the case for specialized collision/distance functions.
+  template <int _SupportOptions = SupportOptions::NoSweptSphere>
   void set(const ShapeBase* shape0, const ShapeBase* shape1);
 
-  /// Set the two shapes, with a relative transformation.
+  /// @brief Set the two shapes, with a relative transformation.
+  /// @param shape0 the first shape.
+  /// @param shape1 the second shape.
+  /// @param tf0 the transformation of the first shape.
+  /// @param tf1 the transformation of the second shape.
+  /// @tparam `SupportOptions` see `set(const ShapeBase*, const
+  /// ShapeBase*)` for more details.
+  template <int _SupportOptions = SupportOptions::NoSweptSphere>
   void set(const ShapeBase* shape0, const ShapeBase* shape1,
            const Transform3f& tf0, const Transform3f& tf1);
 
-  /// @brief support function for shape0
-  inline Vec3f support0(const Vec3f& d, bool dIsNormalized, int& hint) const {
-    return getSupport(shapes[0], d, dIsNormalized, hint);
+  /// @brief support function for shape0.
+  /// @return argmax_{v in shape0} v.dot(dir).
+  /// @param dir support direction.
+  /// @param hint used to initialize the search when shape is a ConvexBase
+  /// object.
+  /// @tparam `SupportOptions` see `set(const ShapeBase*, const
+  /// ShapeBase*)` for more details.
+  template <int _SupportOptions = SupportOptions::NoSweptSphere>
+  inline Vec3f support0(const Vec3f& dir, int& hint) const {
+    return getSupport<_SupportOptions>(shapes[0], dir, hint);
   }
 
-  /// @brief support function for shape1
-  inline Vec3f support1(const Vec3f& d, bool dIsNormalized, int& hint) const {
-    return oR1 *
-               getSupport(shapes[1], oR1.transpose() * d, dIsNormalized, hint) +
-           ot1;
+  /// @brief support function for shape1.
+  /// @return argmax_{v in shape0} v.dot(dir).
+  /// @param dir support direction.
+  /// @param hint used to initialize the search when shape is a ConvexBase
+  /// object.
+  /// @tparam `SupportOptions` see `set(const ShapeBase*, const
+  /// ShapeBase*)` for more details.
+  template <int _SupportOptions = SupportOptions::NoSweptSphere>
+  inline Vec3f support1(const Vec3f& dir, int& hint) const {
+    // clang-format off
+    return oR1 * getSupport<_SupportOptions>(shapes[1], oR1.transpose() * dir, hint) + ot1;
+    // clang-format on
   }
 
-  /// @brief support function for the pair of shapes
-  inline void support(const Vec3f& d, bool dIsNormalized, Vec3f& supp0,
-                      Vec3f& supp1, support_func_guess_t& hint) const {
+  /// @brief Support function for the pair of shapes. This method assumes `set`
+  /// has already been called.
+  /// \param hint used to initialize the search when shape is a ConvexBase
+  /// object.
+  inline void support(const Vec3f& dir, Vec3f& supp0, Vec3f& supp1,
+                      support_func_guess_t& hint) const {
     assert(getSupportFunc != NULL);
-    getSupportFunc(*this, d, dIsNormalized, supp0, supp1, hint,
+    getSupportFunc(*this, dir, supp0, supp1, hint,
                    const_cast<ShapeData*>(data));
   }
 };
@@ -149,6 +209,13 @@ struct HPP_FCL_DLLAPI GJK {
 
   typedef unsigned char vertex_id_t;
 
+  /// @brief A simplex is a set of up to 4 vertices.
+  /// Its rank is the number of vertices it contains.
+  /// @note This data structure does **not** own the vertices it refers to.
+  /// To be efficient, the constructor of `GJK` creates storage for 4 vertices.
+  /// Since GJK does not need any more storage, it reuses these vertices
+  /// throughout the algorithm by using multiple instance of this `Simplex`
+  /// class.
   struct HPP_FCL_DLLAPI Simplex {
     /// @brief simplex vertex
     SimplexV* vertex[4];
@@ -156,36 +223,64 @@ struct HPP_FCL_DLLAPI GJK {
     vertex_id_t rank;
 
     Simplex() {}
+
+    void reset() {
+      rank = 0;
+      for (size_t i = 0; i < 4; ++i) vertex[i] = nullptr;
+    }
   };
 
   /// @brief Status of the GJK algorithm:
-  /// Valid: GJK converged and the shapes are not in collision.
-  /// Inside: GJK converged and the shapes are in collision.
+  /// DidNotRun: GJK has not been run.
+  /// Failed: GJK did not converge (it exceeded the maximum number of
+  /// iterations).
+  /// NoCollisionEarlyStopped: GJK found a separating hyperplane and exited
+  ///     before converting. The shapes are not in collision.
+  /// NoCollision: GJK converged and the shapes are not in collision.
+  /// Collision: GJK converged and the shapes are in collision.
   /// Failed: GJK did not converge.
-  enum Status { Valid, Inside, Failed, EarlyStopped };
+  enum Status {
+    DidNotRun,
+    Failed,
+    NoCollisionEarlyStopped,
+    NoCollision,
+    CollisionWithPenetrationInformation,
+    Collision
+  };
 
-  MinkowskiDiff const* shape;
-  Vec3f ray;
+ public:
+  FCL_REAL distance_upper_bound;
+  Status status;
   GJKVariant gjk_variant;
   GJKConvergenceCriterion convergence_criterion;
   GJKConvergenceCriterionType convergence_criterion_type;
-  support_func_guess_t support_hint;
-  /// The distance computed by GJK. The possible values are
-  /// - \f$ d = - R - 1 \f$ when a collision is detected and GJK
-  ///   cannot compute penetration informations.
-  /// - \f$ - R \le d \le 0 \f$ when a collision is detected and GJK can
-  ///   compute penetration informations.
-  /// - \f$ 0 < d \le d_{ub} \f$ when there is no collision and GJK can compute
-  ///   the closest points.
-  /// - \f$ d_{ub} < d \f$ when there is no collision and GJK cannot compute the
-  ///   closest points.
-  ///
-  /// where \f$ d \f$ is the GJK::distance, \f$ R \f$ is the sum of the \c shape
-  /// MinkowskiDiff::inflation and \f$ d_{ub} \f$ is the
-  /// GJK::distance_upper_bound.
-  FCL_REAL distance;
-  Simplex simplices[2];
 
+  MinkowskiDiff const* shape;
+  Vec3f ray;
+  support_func_guess_t support_hint;
+  /// @brief The distance between the two shapes, computed by GJK.
+  /// If the distance is below GJK's threshold, the shapes are in collision in
+  /// the eyes of GJK. If `distance_upper_bound` is set to a value lower than
+  /// infinity, GJK will early stop as soon as it finds `distance` to be greater
+  /// than `distance_upper_bound`.
+  FCL_REAL distance;
+  Simplex* simplex;  // Pointer to the result of the last run of GJK.
+
+ private:
+  // max_iteration and tolerance are made private
+  // because they are meant to be set by the `reset` function.
+  size_t max_iterations;
+  FCL_REAL tolerance;
+
+  SimplexV store_v[4];
+  SimplexV* free_v[4];
+  vertex_id_t nfree;
+  vertex_id_t current;
+  Simplex simplices[2];
+  size_t iterations;
+  size_t iterations_momentum_stop;
+
+ public:
   /// \param max_iterations_ number of iteration before GJK returns failure.
   /// \param tolerance_ precision of the algorithm.
   ///
@@ -193,12 +288,17 @@ struct HPP_FCL_DLLAPI GJK {
   /// with some vertices closer than this threshold.
   ///
   /// Suggested values are 100 iterations and a tolerance of 1e-6.
-  GJK(unsigned int max_iterations_, FCL_REAL tolerance_)
+  GJK(size_t max_iterations_, FCL_REAL tolerance_)
       : max_iterations(max_iterations_), tolerance(tolerance_) {
+    HPP_FCL_ASSERT(tolerance_ > 0, "Tolerance must be positive.",
+                   std::invalid_argument);
     initialize();
   }
 
-  void initialize();
+  /// @brief resets the GJK algorithm, preparing it for a new run.
+  /// Other than the maximum number of iterations and the tolerance,
+  /// this function does **not** modify the parameters of the GJK algorithm.
+  void reset(size_t max_iterations_, FCL_REAL tolerance_);
 
   /// @brief GJK algorithm, given the initial value guess
   Status evaluate(
@@ -207,9 +307,9 @@ struct HPP_FCL_DLLAPI GJK {
 
   /// @brief apply the support function along a direction, the result is return
   /// in sv
-  inline void getSupport(const Vec3f& d, bool dIsNormalized, SimplexV& sv,
+  inline void getSupport(const Vec3f& d, SimplexV& sv,
                          support_func_guess_t& hint) const {
-    shape->support(d, dIsNormalized, sv.w0, sv.w1, hint);
+    shape->support(d, sv.w0, sv.w1, hint);
     sv.w = sv.w0 - sv.w1;
   }
 
@@ -221,19 +321,16 @@ struct HPP_FCL_DLLAPI GJK {
   inline Simplex* getSimplex() const { return simplex; }
 
   /// Tells whether the closest points are available.
-  bool hasClosestPoints() { return distance < distance_upper_bound; }
+  bool hasClosestPoints() const { return distance < distance_upper_bound; }
 
-  /// Tells whether the penetration information.
-  ///
-  /// In such case, most indepth points and penetration depth can be retrieved
-  /// from GJK. Calling EPA has an undefined behaviour.
-  bool hasPenetrationInformation(const MinkowskiDiff& shape) {
-    return distance > -shape.inflation.sum();
-  }
-
-  /// Get the closest points on each object.
-  /// @return true on success
-  bool getClosestPoints(const MinkowskiDiff& shape, Vec3f& w0, Vec3f& w1);
+  /// Get the witness points on each object, and the corresponding normal.
+  /// @param[in] shape is the Minkowski difference of the two shapes.
+  /// @param[out] w0 is the witness point on shape0.
+  /// @param[out] w1 is the witness point on shape1.
+  /// @param[out] normal is the normal of the separating plane found by
+  /// GJK. It points from shape0 to shape1.
+  void getWitnessPointsAndNormal(const MinkowskiDiff& shape, Vec3f& w0,
+                                 Vec3f& w1, Vec3f& normal) const;
 
   /// @brief get the guess from current simplex
   Vec3f getGuessFromSimplex() const;
@@ -249,32 +346,34 @@ struct HPP_FCL_DLLAPI GJK {
   /// @brief Convergence check used to stop GJK when shapes are not in
   /// collision.
   bool checkConvergence(const Vec3f& w, const FCL_REAL& rl, FCL_REAL& alpha,
-                        const FCL_REAL& omega);
+                        const FCL_REAL& omega) const;
 
-  /// @brief Get GJK number of iterations.
-  inline size_t getIterations() { return iterations; }
+  /// @brief Get the max number of iterations of GJK.
+  size_t getNumMaxIterations() const { return max_iterations; }
 
-  /// @brief Get GJK tolerance.
-  inline FCL_REAL getTolerance() { return tolerance; }
+  /// @brief Get the tolerance of GJK.
+  FCL_REAL getTolerance() const { return tolerance; }
+
+  /// @brief Get the number of iterations of the last run of GJK.
+  size_t getNumIterations() const { return iterations; }
+
+  /// @brief Get GJK number of iterations before momentum stops.
+  /// Only usefull if the Nesterov or Polyak acceleration activated.
+  size_t getNumIterationsMomentumStopped() const {
+    return iterations_momentum_stop;
+  }
 
  private:
-  SimplexV store_v[4];
-  SimplexV* free_v[4];
-  vertex_id_t nfree;
-  vertex_id_t current;
-  Simplex* simplex;
-  Status status;
-
-  unsigned int max_iterations;
-  FCL_REAL tolerance;
-  FCL_REAL distance_upper_bound;
-  size_t iterations;
+  /// @brief Initializes the GJK algorithm.
+  /// This function should only be called by the constructor.
+  /// Otherwise use \ref reset.
+  void initialize();
 
   /// @brief discard one vertex from the simplex
   inline void removeVertex(Simplex& simplex);
 
   /// @brief append one vertex to the simplex
-  inline void appendVertex(Simplex& simplex, const Vec3f& v, bool isNormalized,
+  inline void appendVertex(Simplex& simplex, const Vec3f& v,
                            support_func_guess_t& hint);
 
   /// @brief Project origin (0) onto line a-b
@@ -290,8 +389,8 @@ struct HPP_FCL_DLLAPI GJK {
   /// which reuse checks from edges.
   /// Finally, in addition to the voronoi procedure, checks relying on the order
   /// of construction
-  // of the simplex are added. To know more about these, visit
-  // https://caseymuratori.com/blog_0003.
+  /// of the simplex are added. To know more about these, visit
+  /// https://caseymuratori.com/blog_0003.
   bool projectLineOrigin(const Simplex& current, Simplex& next);
 
   /// @brief Project origin (0) onto triangle a-b-c
@@ -303,68 +402,80 @@ struct HPP_FCL_DLLAPI GJK {
   bool projectTetrahedraOrigin(const Simplex& current, Simplex& next);
 };
 
-static const size_t EPA_MAX_FACES = 128;
-static const size_t EPA_MAX_VERTICES = 64;
-static const FCL_REAL EPA_EPS = 0.000001;
-static const size_t EPA_MAX_ITERATIONS = 255;
-
 /// @brief class for EPA algorithm
 struct HPP_FCL_DLLAPI EPA {
-  typedef GJK::SimplexV SimplexV;
-  struct HPP_FCL_DLLAPI SimplexF {
+  typedef GJK::SimplexV SimplexVertex;
+  struct HPP_FCL_DLLAPI SimplexFace {
     Vec3f n;
     FCL_REAL d;
-    SimplexV* vertex[3];  // a face has three vertices
-    SimplexF* f[3];       // a face has three adjacent faces
-    SimplexF* l[2];       // the pre and post faces in the list
-    size_t e[3];
+    bool ignore;          // If the origin does not project inside the face, we
+                          // ignore this face.
+    size_t vertex_id[3];  // Index of vertex in sv_store.
+    SimplexFace* adjacent_faces[3];  // A face has three adjacent faces.
+    SimplexFace* prev_face;          // The previous face in the list.
+    SimplexFace* next_face;          // The next face in the list.
+    size_t adjacent_edge[3];         // Each face has 3 edges: `0`, `1` and `2`.
+                              // The i-th adjacent face is bound (to this face)
+                              // along its `adjacent_edge[i]`-th edge
+                              // (with 0 <= i <= 2).
     size_t pass;
 
-    SimplexF() : n(Vec3f::Zero()){};
+    SimplexFace() : n(Vec3f::Zero()), ignore(false){};
   };
 
-  struct HPP_FCL_DLLAPI SimplexList {
-    SimplexF* root;
+  /// @brief The simplex list of EPA is a linked list of faces.
+  /// Note: EPA's linked list does **not** own any memory.
+  /// The memory it refers to is contiguous and owned by a std::vector.
+  struct HPP_FCL_DLLAPI SimplexFaceList {
+    SimplexFace* root;
     size_t count;
-    SimplexList() : root(NULL), count(0) {}
-    void append(SimplexF* face) {
-      face->l[0] = NULL;
-      face->l[1] = root;
-      if (root) root->l[0] = face;
+    SimplexFaceList() : root(nullptr), count(0) {}
+
+    void reset() {
+      root = nullptr;
+      count = 0;
+    }
+
+    void append(SimplexFace* face) {
+      face->prev_face = nullptr;
+      face->next_face = root;
+      if (root != nullptr) root->prev_face = face;
       root = face;
       ++count;
     }
 
-    void remove(SimplexF* face) {
-      if (face->l[1]) face->l[1]->l[0] = face->l[0];
-      if (face->l[0]) face->l[0]->l[1] = face->l[1];
-      if (face == root) root = face->l[1];
+    void remove(SimplexFace* face) {
+      if (face->next_face != nullptr)
+        face->next_face->prev_face = face->prev_face;
+      if (face->prev_face != nullptr)
+        face->prev_face->next_face = face->next_face;
+      if (face == root) root = face->next_face;
       --count;
     }
   };
 
-  static inline void bind(SimplexF* fa, size_t ea, SimplexF* fb, size_t eb) {
-    fa->e[ea] = eb;
-    fa->f[ea] = fb;
-    fb->e[eb] = ea;
-    fb->f[eb] = fa;
+  /// @brief We bind the face `fa` along its edge `ea` to the face `fb` along
+  /// its edge `fb`.
+  static inline void bind(SimplexFace* fa, size_t ea, SimplexFace* fb,
+                          size_t eb) {
+    assert(ea == 0 || ea == 1 || ea == 2);
+    assert(eb == 0 || eb == 1 || eb == 2);
+    fa->adjacent_edge[ea] = eb;
+    fa->adjacent_faces[ea] = fb;
+    fb->adjacent_edge[eb] = ea;
+    fb->adjacent_faces[eb] = fa;
   }
 
   struct HPP_FCL_DLLAPI SimplexHorizon {
-    SimplexF* cf;  // current face in the horizon
-    SimplexF* ff;  // first face in the horizon
-    size_t nf;     // number of faces in the horizon
-    SimplexHorizon() : cf(NULL), ff(NULL), nf(0) {}
+    SimplexFace* current_face;  // current face in the horizon
+    SimplexFace* first_face;    // first face in the horizon
+    size_t num_faces;           // number of faces in the horizon
+    SimplexHorizon()
+        : current_face(nullptr), first_face(nullptr), num_faces(0) {}
   };
 
- private:
-  unsigned int max_face_num;
-  unsigned int max_vertex_num;
-  unsigned int max_iterations;
-  FCL_REAL tolerance;
-
- public:
   enum Status {
+    DidNotRun = -1,
     Failed = 0,
     Valid = 1,
     AccuracyReached = 1 << 1 | Valid,
@@ -376,51 +487,111 @@ struct HPP_FCL_DLLAPI EPA {
     FallBack = 6 << 1 | Failed
   };
 
+ public:
   Status status;
   GJK::Simplex result;
   Vec3f normal;
   FCL_REAL depth;
-  SimplexV* sv_store;
-  SimplexF* fc_store;
-  size_t nextsv;
-  SimplexList hull, stock;
+  SimplexFace* closest_face;
 
-  EPA(unsigned int max_face_num_, unsigned int max_vertex_num_,
-      unsigned int max_iterations_, FCL_REAL tolerance_)
-      : max_face_num(max_face_num_),
-        max_vertex_num(max_vertex_num_),
-        max_iterations(max_iterations_),
-        tolerance(tolerance_) {
+ private:
+  // max_iteration and tolerance are made private
+  // because they are meant to be set by the `reset` function.
+  size_t max_iterations;
+  FCL_REAL tolerance;
+
+  std::vector<SimplexVertex> sv_store;
+  std::vector<SimplexFace> fc_store;
+  SimplexFaceList hull, stock;
+  size_t num_vertices;  // number of vertices in polytpoe constructed by EPA
+  size_t iterations;
+
+ public:
+  EPA(size_t max_iterations_, FCL_REAL tolerance_)
+      : max_iterations(max_iterations_), tolerance(tolerance_) {
     initialize();
   }
 
-  ~EPA() {
-    delete[] sv_store;
-    delete[] fc_store;
+  /// @brief Copy constructor of EPA.
+  /// Mostly needed for the copy constructor of `GJKSolver`.
+  EPA(const EPA& other)
+      : max_iterations(other.max_iterations),
+        tolerance(other.tolerance),
+        sv_store(other.sv_store),
+        fc_store(other.fc_store) {
+    initialize();
   }
 
-  void initialize();
+  /// @brief Get the max number of iterations of EPA.
+  size_t getNumMaxIterations() const { return max_iterations; }
+
+  /// @brief Get the max number of vertices of EPA.
+  size_t getNumMaxVertices() const { return sv_store.size(); }
+
+  /// @brief Get the max number of faces of EPA.
+  size_t getNumMaxFaces() const { return fc_store.size(); }
+
+  /// @brief Get the tolerance of EPA.
+  FCL_REAL getTolerance() const { return tolerance; }
+
+  /// @brief Get the number of iterations of the last run of EPA.
+  size_t getNumIterations() const { return iterations; }
+
+  /// @brief Get the number of vertices in the polytope of the last run of EPA.
+  size_t getNumVertices() const { return num_vertices; }
+
+  /// @brief Get the number of faces in the polytope of the last run of EPA.
+  size_t getNumFaces() const { return hull.count; }
+
+  /// @brief resets the EPA algorithm, preparing it for a new run.
+  /// It potentially reallocates memory for the vertices and faces
+  /// if the passed parameters are bigger than the previous ones.
+  /// This function does **not** modify the parameters of the EPA algorithm,
+  /// i.e. the maximum number of iterations and the tolerance.
+  /// @note calling this function destroys the previous state of EPA.
+  /// In the future, we may want to copy it instead, i.e. when EPA will
+  /// be (properly) warm-startable.
+  void reset(size_t max_iterations, FCL_REAL tolerance);
 
   /// \return a Status which can be demangled using (status & Valid) or
   ///         (status & Failed). The other values provide a more detailled
   ///         status
   Status evaluate(GJK& gjk, const Vec3f& guess);
 
-  /// Get the closest points on each object.
-  /// @return true on success
-  bool getClosestPoints(const MinkowskiDiff& shape, Vec3f& w0, Vec3f& w1);
+  /// Get the witness points on each object, and the corresponding normal.
+  /// @param[in] shape is the Minkowski difference of the two shapes.
+  /// @param[out] w0 is the witness point on shape0.
+  /// @param[out] w1 is the witness point on shape1.
+  /// @param[in] normal is the normal found by EPA. It points from shape0 to
+  /// shape1. The normal is used to correct the witness points on the shapes if
+  /// the shapes have a non-zero swept-sphere radius.
+  void getWitnessPointsAndNormal(const MinkowskiDiff& shape, Vec3f& w0,
+                                 Vec3f& w1, Vec3f& normal) const;
 
  private:
-  bool getEdgeDist(SimplexF* face, SimplexV* a, SimplexV* b, FCL_REAL& dist);
+  /// @brief Allocates memory for the EPA algorithm.
+  /// This function should only be called by the constructor.
+  /// Otherwise use \ref reset.
+  void initialize();
 
-  SimplexF* newFace(SimplexV* a, SimplexV* b, SimplexV* vertex, bool forced);
+  bool getEdgeDist(SimplexFace* face, const SimplexVertex& a,
+                   const SimplexVertex& b, FCL_REAL& dist);
+
+  /// @brief Add a new face to the polytope.
+  /// This function sets the `ignore` flag to `true` if the origin does not
+  /// project inside the face.
+  SimplexFace* newFace(size_t id_a, size_t id_b, size_t id_vertex,
+                       bool force = false);
 
   /// @brief Find the best polytope face to split
-  SimplexF* findBest();
+  SimplexFace* findClosestFace();
 
   /// @brief the goal is to add a face connecting vertex w and face edge f[e]
-  bool expand(size_t pass, SimplexV* w, SimplexF* f, size_t e,
+  bool expand(size_t pass, const SimplexVertex& w, SimplexFace* f, size_t e,
               SimplexHorizon& horizon);
+
+  // @brief Use this function to debug expand if needed.
+  // void PrintExpandLooping(const SimplexFace* f, const SimplexVertex& w);
 };
 
 }  // namespace details

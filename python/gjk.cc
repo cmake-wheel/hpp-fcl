@@ -49,13 +49,59 @@ using namespace hpp::fcl;
 using hpp::fcl::details::EPA;
 using hpp::fcl::details::GJK;
 using hpp::fcl::details::MinkowskiDiff;
+using hpp::fcl::details::SupportOptions;
+
+struct MinkowskiDiffWrapper {
+  static void support0(MinkowskiDiff& self, const Vec3f& dir, int& hint,
+                       bool compute_swept_sphere_support = false) {
+    if (compute_swept_sphere_support) {
+      self.support0<SupportOptions::WithSweptSphere>(dir, hint);
+    } else {
+      self.support0<SupportOptions::NoSweptSphere>(dir, hint);
+    }
+  }
+
+  static void support1(MinkowskiDiff& self, const Vec3f& dir, int& hint,
+                       bool compute_swept_sphere_support = false) {
+    if (compute_swept_sphere_support) {
+      self.support1<SupportOptions::WithSweptSphere>(dir, hint);
+    } else {
+      self.support1<SupportOptions::NoSweptSphere>(dir, hint);
+    }
+  }
+
+  static void set(MinkowskiDiff& self, const ShapeBase* shape0,
+                  const ShapeBase* shape1,
+                  bool compute_swept_sphere_support = false) {
+    if (compute_swept_sphere_support) {
+      self.set<SupportOptions::WithSweptSphere>(shape0, shape1);
+    } else {
+      self.set<SupportOptions::NoSweptSphere>(shape0, shape1);
+    }
+  }
+
+  static void set(MinkowskiDiff& self, const ShapeBase* shape0,
+                  const ShapeBase* shape1, const Transform3f& tf0,
+                  const Transform3f& tf1,
+                  bool compute_swept_sphere_supports = false) {
+    if (compute_swept_sphere_supports) {
+      self.set<SupportOptions::WithSweptSphere>(shape0, shape1, tf0, tf1);
+    } else {
+      self.set<SupportOptions::NoSweptSphere>(shape0, shape1, tf0, tf1);
+    }
+  }
+};
 
 void exposeGJK() {
   if (!eigenpy::register_symbolic_link_to_registered_type<GJK::Status>()) {
     enum_<GJK::Status>("GJKStatus")
-        .value("Valid", GJK::Valid)
-        .value("Inside", GJK::Inside)
-        .value("Failed", GJK::Failed)
+        .value("Failed", GJK::Status::Failed)
+        .value("DidNotRun", GJK::Status::DidNotRun)
+        .value("NoCollision", GJK::Status::NoCollision)
+        .value("NoCollisionEarlyStopped", GJK::Status::NoCollisionEarlyStopped)
+        .value("CollisionWithPenetrationInformation",
+               GJK::Status::CollisionWithPenetrationInformation)
+        .value("Collision", GJK::Status::Collision)
         .export_values();
   }
 
@@ -64,37 +110,59 @@ void exposeGJK() {
                           no_init)
         .def(doxygen::visitor::init<MinkowskiDiff>())
         .def("set",
-             static_cast<void (MinkowskiDiff::*)(
-                 const ShapeBase*, const ShapeBase*)>(&MinkowskiDiff::set),
-             doxygen::member_func_doc(
-                 static_cast<void (MinkowskiDiff::*)(
-                     const ShapeBase*, const ShapeBase*)>(&MinkowskiDiff::set)))
+             static_cast<void (*)(MinkowskiDiff&, const ShapeBase*,
+                                  const ShapeBase*, bool)>(
+                 &MinkowskiDiffWrapper::set),
+             doxygen::member_func_doc(static_cast<void (MinkowskiDiff::*)(
+                                          const ShapeBase*, const ShapeBase*)>(
+                 &MinkowskiDiff::set<SupportOptions::NoSweptSphere>)))
+
         .def("set",
-             static_cast<void (MinkowskiDiff::*)(
-                 const ShapeBase*, const ShapeBase*, const Transform3f& tf0,
-                 const Transform3f& tf1)>(&MinkowskiDiff::set),
+             static_cast<void (*)(MinkowskiDiff&, const ShapeBase*,
+                                  const ShapeBase*, const Transform3f&,
+                                  const Transform3f&, bool)>(
+                 &MinkowskiDiffWrapper::set),
              doxygen::member_func_doc(
                  static_cast<void (MinkowskiDiff::*)(
-                     const ShapeBase*, const ShapeBase*, const Transform3f& tf0,
-                     const Transform3f& tf1)>(&MinkowskiDiff::set)))
-        .DEF_CLASS_FUNC(MinkowskiDiff, support0)
-        .DEF_CLASS_FUNC(MinkowskiDiff, support1)
-        .DEF_CLASS_FUNC(MinkowskiDiff, support)
-        .DEF_RW_CLASS_ATTRIB(MinkowskiDiff, inflation)
+                     const ShapeBase*, const ShapeBase*, const Transform3f&,
+                     const Transform3f&)>(
+                     &MinkowskiDiff::set<SupportOptions::NoSweptSphere>)))
+
+        .def("support0", &MinkowskiDiffWrapper::support0,
+             doxygen::member_func_doc(
+                 &MinkowskiDiff::support0<SupportOptions::NoSweptSphere>))
+
+        .def("support1", &MinkowskiDiffWrapper::support1,
+             doxygen::member_func_doc(
+                 &MinkowskiDiff::support1<SupportOptions::NoSweptSphere>))
+
+        .def("support", &MinkowskiDiff::support,
+             doxygen::member_func_doc(&MinkowskiDiff::support))
+
+        .DEF_RW_CLASS_ATTRIB(MinkowskiDiff, swept_sphere_radius)
         .DEF_RW_CLASS_ATTRIB(MinkowskiDiff, normalize_support_direction);
   }
 
   if (!eigenpy::register_symbolic_link_to_registered_type<GJKVariant>()) {
     enum_<GJKVariant>("GJKVariant")
         .value("DefaultGJK", GJKVariant::DefaultGJK)
+        .value("PolyakAcceleration", GJKVariant::PolyakAcceleration)
         .value("NesterovAcceleration", GJKVariant::NesterovAcceleration)
+        .export_values();
+  }
+
+  if (!eigenpy::register_symbolic_link_to_registered_type<GJKInitialGuess>()) {
+    enum_<GJKInitialGuess>("GJKInitialGuess")
+        .value("DefaultGuess", GJKInitialGuess::DefaultGuess)
+        .value("CachedGuess", GJKInitialGuess::CachedGuess)
+        .value("BoundingVolumeGuess", GJKInitialGuess::BoundingVolumeGuess)
         .export_values();
   }
 
   if (!eigenpy::register_symbolic_link_to_registered_type<
           GJKConvergenceCriterion>()) {
     enum_<GJKConvergenceCriterion>("GJKConvergenceCriterion")
-        .value("VDB", GJKConvergenceCriterion::VDB)
+        .value("Default", GJKConvergenceCriterion::Default)
         .value("DualityGap", GJKConvergenceCriterion::DualityGap)
         .value("Hybrid", GJKConvergenceCriterion::Hybrid)
         .export_values();
@@ -117,12 +185,15 @@ void exposeGJK() {
         .DEF_RW_CLASS_ATTRIB(GJK, gjk_variant)
         .DEF_RW_CLASS_ATTRIB(GJK, convergence_criterion)
         .DEF_RW_CLASS_ATTRIB(GJK, convergence_criterion_type)
+        .DEF_CLASS_FUNC(GJK, reset)
         .DEF_CLASS_FUNC(GJK, evaluate)
+        .DEF_CLASS_FUNC(GJK, getTolerance)
+        .DEF_CLASS_FUNC(GJK, getNumMaxIterations)
+        .DEF_CLASS_FUNC(GJK, getNumIterations)
+        .DEF_CLASS_FUNC(GJK, getNumIterationsMomentumStopped)
         .DEF_CLASS_FUNC(GJK, hasClosestPoints)
-        .DEF_CLASS_FUNC(GJK, hasPenetrationInformation)
-        .DEF_CLASS_FUNC(GJK, getClosestPoints)
+        .DEF_CLASS_FUNC(GJK, getWitnessPointsAndNormal)
         .DEF_CLASS_FUNC(GJK, setDistanceEarlyBreak)
-        .DEF_CLASS_FUNC(GJK, getGuessFromSimplex)
-        .DEF_CLASS_FUNC(GJK, getIterations);
+        .DEF_CLASS_FUNC(GJK, getGuessFromSimplex);
   }
 }

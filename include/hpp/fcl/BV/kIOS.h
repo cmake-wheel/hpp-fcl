@@ -38,7 +38,7 @@
 #ifndef HPP_FCL_KIOS_H
 #define HPP_FCL_KIOS_H
 
-#include <hpp/fcl/BV/OBB.h>
+#include "hpp/fcl/BV/OBB.h"
 
 namespace hpp {
 namespace fcl {
@@ -53,6 +53,8 @@ struct CollisionRequest;
 class HPP_FCL_DLLAPI kIOS {
   /// @brief One sphere in kIOS
   struct HPP_FCL_DLLAPI kIOS_Sphere {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
     Vec3f o;
     FCL_REAL r;
 
@@ -92,6 +94,8 @@ class HPP_FCL_DLLAPI kIOS {
   }
 
  public:
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
   /// @brief Equality operator
   bool operator==(const kIOS& other) const {
     bool res = obb == other.obb && num_spheres == other.num_spheres;
@@ -107,8 +111,10 @@ class HPP_FCL_DLLAPI kIOS {
   /// @brief Difference operator
   bool operator!=(const kIOS& other) const { return !(*this == other); }
 
+  static constexpr size_t max_num_spheres = 5;
+
   /// @brief The (at most) five spheres for intersection
-  kIOS_Sphere spheres[5];
+  kIOS_Sphere spheres[max_num_spheres];
 
   /// @brief The number of spheres, no larger than 5
   unsigned int num_spheres;

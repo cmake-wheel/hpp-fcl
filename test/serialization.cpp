@@ -1,7 +1,7 @@
 /*
  *  Software License Agreement (BSD License)
  *
- *  Copyright (c) 2021-2022 INRIA.
+ *  Copyright (c) 2021-2023 INRIA.
  *  All rights reserved.
  *
  *  Redistribution and use in source and binary forms, with or without
@@ -45,102 +45,193 @@
 #include <hpp/fcl/serialization/AABB.h>
 #include <hpp/fcl/serialization/BVH_model.h>
 #include <hpp/fcl/serialization/hfield.h>
+#include <hpp/fcl/serialization/transform.h>
 #include <hpp/fcl/serialization/geometric_shapes.h>
 #include <hpp/fcl/serialization/convex.h>
+#include <hpp/fcl/serialization/archive.h>
 #include <hpp/fcl/serialization/memory.h>
+
+#ifdef HPP_FCL_HAS_OCTOMAP
+#include <hpp/fcl/serialization/octree.h>
+#endif
 
 #include "utility.h"
 #include "fcl_resources/config.h"
 
 #include <boost/archive/tmpdir.hpp>
-#include <boost/archive/text_iarchive.hpp>
-#include <boost/archive/text_oarchive.hpp>
-#include <boost/archive/xml_iarchive.hpp>
-#include <boost/archive/xml_oarchive.hpp>
-#include <boost/archive/binary_iarchive.hpp>
-#include <boost/archive/binary_oarchive.hpp>
 #include <boost/filesystem.hpp>
-
-#include <boost/asio/streambuf.hpp>
 
 namespace utf = boost::unit_test::framework;
 
 using namespace hpp::fcl;
 
 template <typename T>
-void saveToBinary(const T& object, boost::asio::streambuf& buffer) {
-  boost::archive::binary_oarchive oa(buffer);
-  oa & object;
-}
-
-template <typename T>
-inline void loadFromBinary(T& object, boost::asio::streambuf& buffer) {
-  boost::archive::binary_iarchive ia(buffer);
-  ia >> object;
-}
-
-template <typename T>
 bool check(const T& value, const T& other) {
   return value == other;
 }
 
+template <typename T>
+bool check_ptr(const T* value, const T* other) {
+  return *value == *other;
+}
+
 enum SerializationMode { TXT = 1, XML = 2, BIN = 4, STREAM = 8 };
+
+template <typename T>
+void test_serialization(const T* value, T& other_value,
+                        const int mode = TXT | XML | BIN | STREAM) {
+  test_serialization(*value, other_value, mode);
+}
+
+template <typename T,
+          bool is_base = std::is_base_of<T, CollisionGeometry>::value>
+struct test_pointer_serialization_impl {
+  static void run(const T&, T&, const int) {}
+};
+
+template <typename T>
+struct test_pointer_serialization_impl<T, true> {
+  static void run(const T& value, T& other_value, const int mode) {
+    const CollisionGeometry* ptr = &value;
+    CollisionGeometry* other_ptr = &other_value;
+
+    const boost::filesystem::path tmp_path(boost::archive::tmpdir());
+    const boost::filesystem::path txt_path("file.txt");
+    const boost::filesystem::path txt_ptr_path("ptr_file.txt");
+    const boost::filesystem::path xml_path("file.xml");
+    const boost::filesystem::path bin_path("file.bin");
+    const boost::filesystem::path txt_filename(tmp_path / txt_path);
+    const boost::filesystem::path xml_filename(tmp_path / xml_path);
+    const boost::filesystem::path bin_filename(tmp_path / bin_path);
+
+    // TXT
+    if (mode & 0x1) {
+      {
+        std::ofstream ofs(txt_filename.c_str());
+
+        boost::archive::text_oarchive oa(ofs);
+        oa << ptr;
+      }
+      BOOST_CHECK(check(*reinterpret_cast<const CollisionGeometry*>(ptr),
+                        *reinterpret_cast<const CollisionGeometry*>(ptr)));
+
+      {
+        std::ifstream ifs(txt_filename.c_str());
+        boost::archive::text_iarchive ia(ifs);
+
+        ia >> other_ptr;
+      }
+      BOOST_CHECK(
+          check(*reinterpret_cast<const CollisionGeometry*>(ptr),
+                *reinterpret_cast<const CollisionGeometry*>(other_ptr)));
+    }
+  }
+};
+
+template <typename T>
+void test_pointer_serialization(const T& value, T& other_value,
+                                const int mode = TXT | XML | BIN | STREAM) {
+  test_pointer_serialization_impl<T>::run(value, other_value, mode);
+}
 
 template <typename T>
 void test_serialization(const T& value, T& other_value,
                         const int mode = TXT | XML | BIN | STREAM) {
   const boost::filesystem::path tmp_path(boost::archive::tmpdir());
   const boost::filesystem::path txt_path("file.txt");
+  const boost::filesystem::path txt_ptr_path("ptr_file.txt");
+  const boost::filesystem::path xml_path("file.xml");
   const boost::filesystem::path bin_path("file.bin");
   const boost::filesystem::path txt_filename(tmp_path / txt_path);
+  const boost::filesystem::path xml_filename(tmp_path / xml_path);
   const boost::filesystem::path bin_filename(tmp_path / bin_path);
 
   // TXT
   if (mode & 0x1) {
+    // -- TXT
     {
-      std::ofstream ofs(txt_filename.c_str());
+      const std::string filename = txt_filename.string();
+      hpp::fcl::serialization::saveToText(value, filename);
+      BOOST_CHECK(check(value, value));
 
-      boost::archive::text_oarchive oa(ofs);
-      oa << value;
+      hpp::fcl::serialization::loadFromText(other_value, filename);
+      BOOST_CHECK(check(value, other_value));
     }
-    BOOST_CHECK(check(value, value));
 
+    // -- String stream (TXT format)
     {
-      std::ifstream ifs(txt_filename.c_str());
-      boost::archive::text_iarchive ia(ifs);
+      std::stringstream ss_out;
+      hpp::fcl::serialization::saveToStringStream(value, ss_out);
+      BOOST_CHECK(check(value, value));
 
-      ia >> other_value;
+      std::istringstream ss_in(ss_out.str());
+      hpp::fcl::serialization::loadFromStringStream(other_value, ss_in);
+      BOOST_CHECK(check(value, other_value));
     }
-    BOOST_CHECK(check(value, other_value));
+
+    // -- String
+    {
+      const std::string str_out = hpp::fcl::serialization::saveToString(value);
+      BOOST_CHECK(check(value, value));
+
+      const std::string str_in(str_out);
+      hpp::fcl::serialization::loadFromString(other_value, str_in);
+      BOOST_CHECK(check(value, other_value));
+    }
+  }
+
+  // XML
+  if (mode & 0x2) {
+    {
+      const std::string filename = xml_filename.string();
+      const std::string xml_tag = "value";
+      hpp::fcl::serialization::saveToXML(value, filename, xml_tag);
+      BOOST_CHECK(check(value, value));
+
+      hpp::fcl::serialization::loadFromXML(other_value, filename, xml_tag);
+      BOOST_CHECK(check(value, other_value));
+    }
   }
 
   // BIN
   if (mode & 0x4) {
     {
-      std::ofstream ofs(bin_filename.c_str(), std::ios::binary);
-      boost::archive::binary_oarchive oa(ofs);
-      oa << value;
-    }
-    BOOST_CHECK(check(value, value));
+      const std::string filename = bin_filename.string();
+      hpp::fcl::serialization::saveToBinary(value, filename);
+      BOOST_CHECK(check(value, value));
 
-    {
-      std::ifstream ifs(bin_filename.c_str(), std::ios::binary);
-      boost::archive::binary_iarchive ia(ifs);
-
-      ia >> other_value;
+      hpp::fcl::serialization::loadFromBinary(other_value, filename);
+      BOOST_CHECK(check(value, other_value));
     }
-    BOOST_CHECK(check(value, other_value));
   }
 
   // Stream Buffer
   if (mode & 0x8) {
-    boost::asio::streambuf buffer;
-    saveToBinary(value, buffer);
-    BOOST_CHECK(check(value, value));
+    {
+      boost::asio::streambuf buffer;
+      hpp::fcl::serialization::saveToBuffer(value, buffer);
+      BOOST_CHECK(check(value, value));
 
-    loadFromBinary(other_value, buffer);
-    BOOST_CHECK(check(value, other_value));
+      hpp::fcl::serialization::loadFromBuffer(other_value, buffer);
+      BOOST_CHECK(check(value, other_value));
+    }
   }
+
+  // Test std::shared_ptr<T>
+  {
+    const boost::filesystem::path txt_ptr_filename(tmp_path / txt_ptr_path);
+    std::shared_ptr<T> ptr = std::make_shared<T>(value);
+
+    const std::string filename = txt_ptr_filename.string();
+    hpp::fcl::serialization::saveToText(ptr, filename);
+    BOOST_CHECK(check_ptr(ptr.get(), ptr.get()));
+
+    std::shared_ptr<T> other_ptr = nullptr;
+    hpp::fcl::serialization::loadFromText(other_ptr, filename);
+    BOOST_CHECK(check_ptr(ptr.get(), other_ptr.get()));
+  }
+
+  test_pointer_serialization(value, other_value);
 }
 
 template <typename T>
@@ -166,6 +257,9 @@ BOOST_AUTO_TEST_CASE(test_collision_data) {
   collision_result.addContact(contact);
   collision_result.addContact(contact);
   collision_result.distance_lower_bound = 0.1;
+  collision_result.normal.setOnes();
+  collision_result.nearest_points[0].setRandom();
+  collision_result.nearest_points[1].setRandom();
   test_serialization(collision_result);
 
   DistanceRequest distance_request(true, 1., 2.);
@@ -176,6 +270,16 @@ BOOST_AUTO_TEST_CASE(test_collision_data) {
   distance_result.nearest_points[0].setRandom();
   distance_result.nearest_points[1].setRandom();
   test_serialization(distance_result);
+}
+
+template <typename T>
+void checkEqualStdVector(const std::vector<T>& v1, const std::vector<T>& v2) {
+  BOOST_CHECK(v1.size() == v2.size());
+  if (v1.size() == v2.size()) {
+    for (size_t i = 0; i < v1.size(); i++) {
+      BOOST_CHECK(v1[i] == v2[i]);
+    }
+  }
 }
 
 BOOST_AUTO_TEST_CASE(test_BVHModel) {
@@ -191,11 +295,19 @@ BOOST_AUTO_TEST_CASE(test_BVHModel) {
   m1.beginModel();
   m1.addSubModel(p1, t1);
   m1.endModel();
+  BOOST_CHECK(m1.num_vertices == p1.size());
+  BOOST_CHECK(m1.num_tris == t1.size());
+  checkEqualStdVector(*m1.vertices, p1);
+  checkEqualStdVector(*m1.tri_indices, t1);
   BOOST_CHECK(m1 == m1);
 
   m2.beginModel();
   m2.addSubModel(p2, t2);
   m2.endModel();
+  BOOST_CHECK(m2.num_vertices == p2.size());
+  BOOST_CHECK(m2.num_tris == t2.size());
+  checkEqualStdVector(*m2.vertices, p2);
+  checkEqualStdVector(*m2.tri_indices, t2);
   BOOST_CHECK(m2 == m2);
   BOOST_CHECK(m1 != m2);
 
@@ -233,6 +345,31 @@ BOOST_AUTO_TEST_CASE(test_Convex) {
     Convex<Triangle> convex_copy;
     test_serialization(convex, convex_copy);
   }
+
+  // Test std::shared_ptr<CollisionGeometry>
+  {
+    const boost::filesystem::path tmp_dir(boost::archive::tmpdir());
+    // TODO(louis): understand why serializing a shared_ptr<CollisionGeometry>
+    // in TXT format fails only on MacOS + -O0.
+    // const boost::filesystem::path txt_filename = tmp_dir / "file.txt";
+    // const boost::filesystem::path bin_filename = tmp_dir / "file.bin";
+    const boost::filesystem::path xml_filename = tmp_dir / "file.xml";
+    Convex<Triangle> convex_copy;
+
+    std::shared_ptr<CollisionGeometry> ptr =
+        std::make_shared<Convex<Triangle>>(convex);
+    BOOST_CHECK(ptr.get());
+    const std::string filename = xml_filename.string();
+    const std::string tag_name = "CollisionGeometry";
+    hpp::fcl::serialization::saveToXML(ptr, filename, tag_name);
+    BOOST_CHECK(check(*reinterpret_cast<Convex<Triangle>*>(ptr.get()), convex));
+
+    std::shared_ptr<CollisionGeometry> other_ptr = nullptr;
+    BOOST_CHECK(!other_ptr.get());
+    hpp::fcl::serialization::loadFromXML(other_ptr, filename, tag_name);
+    BOOST_CHECK(
+        check(convex, *reinterpret_cast<Convex<Triangle>*>(other_ptr.get())));
+  }
 }
 #endif
 
@@ -255,53 +392,138 @@ BOOST_AUTO_TEST_CASE(test_HeightField) {
   }
 }
 
+BOOST_AUTO_TEST_CASE(test_transform) {
+  Transform3f T;
+  T.setQuatRotation(Quaternion3f::UnitRandom());
+  T.setTranslation(Vec3f::Random());
+
+  Transform3f T_copy;
+  test_serialization(T, T_copy);
+}
+
 BOOST_AUTO_TEST_CASE(test_shapes) {
   {
     TriangleP triangle(Vec3f::UnitX(), Vec3f::UnitY(), Vec3f::UnitZ());
+    triangle.setSweptSphereRadius(1.);
+    triangle.computeLocalAABB();
     TriangleP triangle_copy(Vec3f::Random(), Vec3f::Random(), Vec3f::Random());
     test_serialization(triangle, triangle_copy);
   }
 
   {
     Box box(Vec3f::UnitX()), box_copy(Vec3f::Random());
+    box.setSweptSphereRadius(1.);
+    box.computeLocalAABB();
     test_serialization(box, box_copy);
   }
 
   {
     Sphere sphere(1.), sphere_copy(2.);
+    sphere.setSweptSphereRadius(1.);
+    sphere.computeLocalAABB();
     test_serialization(sphere, sphere_copy);
   }
 
   {
     Ellipsoid ellipsoid(1., 2., 3.), ellipsoid_copy(0., 0., 0.);
+    ellipsoid.setSweptSphereRadius(1.);
+    ellipsoid.computeLocalAABB();
     test_serialization(ellipsoid, ellipsoid_copy);
   }
 
   {
     Capsule capsule(1., 2.), capsule_copy(10., 10.);
+    capsule.setSweptSphereRadius(1.);
+    capsule.computeLocalAABB();
     test_serialization(capsule, capsule_copy);
   }
 
   {
     Cone cone(1., 2.), cone_copy(10., 10.);
+    cone.setSweptSphereRadius(1.);
+    cone.computeLocalAABB();
     test_serialization(cone, cone_copy);
   }
 
   {
     Cylinder cylinder(1., 2.), cylinder_copy(10., 10.);
+    cylinder.setSweptSphereRadius(1.);
+    cylinder.computeLocalAABB();
     test_serialization(cylinder, cylinder_copy);
   }
 
   {
     Halfspace hs(Vec3f::Random(), 1.), hs_copy(Vec3f::Zero(), 0.);
+    hs.setSweptSphereRadius(1.);
+    hs.computeLocalAABB();
     test_serialization(hs, hs_copy);
   }
 
   {
     Plane plane(Vec3f::Random(), 1.), plane_copy(Vec3f::Zero(), 0.);
+    plane.setSweptSphereRadius(1.);
+    plane.computeLocalAABB();
     test_serialization(plane, plane_copy);
   }
+
+  {
+    const size_t num_points = 500;
+    std::shared_ptr<std::vector<Vec3f>> points =
+        std::make_shared<std::vector<Vec3f>>();
+    points->reserve(num_points);
+    for (size_t i = 0; i < num_points; i++) {
+      points->emplace_back(Vec3f::Random());
+    }
+    using Convex = Convex<Triangle>;
+    std::unique_ptr<Convex> convex =
+        std::unique_ptr<Convex>(static_cast<Convex*>(ConvexBase::convexHull(
+            points, static_cast<unsigned int>(points->size()), true)));
+    convex->setSweptSphereRadius(1.);
+    convex->computeLocalAABB();
+
+    Convex convex_copy;
+    test_serialization(*convex, convex_copy);
+  }
 }
+
+#ifdef HPP_FCL_HAS_OCTOMAP
+BOOST_AUTO_TEST_CASE(test_octree) {
+  const FCL_REAL resolution = 1e-2;
+  const Matrixx3f points = Matrixx3f::Random(1000, 3);
+  OcTreePtr_t octree_ptr = makeOctree(points, resolution);
+  const OcTree& octree = *octree_ptr.get();
+
+  const boost::filesystem::path tmp_dir(boost::archive::tmpdir());
+  const boost::filesystem::path txt_filename = tmp_dir / "file.txt";
+  const boost::filesystem::path bin_filename = tmp_dir / "file.bin";
+
+  {
+    std::ofstream ofs(bin_filename.c_str(), std::ios::binary);
+    boost::archive::binary_oarchive oa(ofs);
+    oa << octree;
+  }
+
+  OcTree octree_value(1.);
+  {
+    std::ifstream ifs(bin_filename.c_str(),
+                      std::fstream::binary | std::fstream::in);
+    boost::archive::binary_iarchive ia(ifs);
+
+    ia >> octree_value;
+  }
+
+  BOOST_CHECK(octree.getTree() == octree.getTree());
+  BOOST_CHECK(octree_value.getTree() == octree_value.getTree());
+  //  BOOST_CHECK(octree.getTree() == octree_value.getTree());
+  BOOST_CHECK(octree.getResolution() == octree_value.getResolution());
+  BOOST_CHECK(octree.getTree()->size() == octree_value.getTree()->size());
+  BOOST_CHECK(octree.toBoxes().size() == octree_value.toBoxes().size());
+  BOOST_CHECK(octree == octree_value);
+
+  OcTree octree_copy(1.);
+  test_serialization(octree, octree_copy);
+}
+#endif
 
 BOOST_AUTO_TEST_CASE(test_memory_footprint) {
   Sphere sphere(1.);

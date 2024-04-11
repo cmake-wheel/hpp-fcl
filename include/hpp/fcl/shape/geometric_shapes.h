@@ -38,11 +38,19 @@
 #ifndef HPP_FCL_GEOMETRIC_SHAPES_H
 #define HPP_FCL_GEOMETRIC_SHAPES_H
 
+#include <vector>
+#include <memory>
+
 #include <boost/math/constants/constants.hpp>
 
-#include <hpp/fcl/collision_object.h>
-#include <hpp/fcl/data_types.h>
-#include <string.h>
+#include "hpp/fcl/collision_object.h"
+#include "hpp/fcl/data_types.h"
+
+#ifdef HPP_FCL_HAS_QHULL
+namespace orgQhull {
+class Qhull;
+}
+#endif
 
 namespace hpp {
 namespace fcl {
@@ -53,7 +61,9 @@ class HPP_FCL_DLLAPI ShapeBase : public CollisionGeometry {
   ShapeBase() {}
 
   ///  \brief Copy constructor
-  ShapeBase(const ShapeBase& other) : CollisionGeometry(other) {}
+  ShapeBase(const ShapeBase& other)
+      : CollisionGeometry(other),
+        m_swept_sphere_radius(other.m_swept_sphere_radius) {}
 
   ShapeBase& operator=(const ShapeBase& other) = default;
 
@@ -61,6 +71,34 @@ class HPP_FCL_DLLAPI ShapeBase : public CollisionGeometry {
 
   /// @brief Get object type: a geometric shape
   OBJECT_TYPE getObjectType() const { return OT_GEOM; }
+
+  /// @brief Set radius of sphere swept around the shape.
+  /// Must be >= 0.
+  void setSweptSphereRadius(FCL_REAL radius) {
+    if (radius < 0) {
+      HPP_FCL_THROW_PRETTY("Swept-sphere radius must be positive.",
+                           std::invalid_argument);
+    }
+    this->m_swept_sphere_radius = radius;
+  }
+
+  /// @brief Get radius of sphere swept around the shape.
+  /// This radius is always >= 0.
+  FCL_REAL getSweptSphereRadius() const { return this->m_swept_sphere_radius; }
+
+ protected:
+  /// \brief Radius of the sphere swept around the shape.
+  /// Default value is 0.
+  /// Note: this property differs from `inflated` method of certain
+  /// derived classes (e.g. Box, Sphere, Ellipsoid, Capsule, Cone, Cylinder)
+  /// in the sense that inflated returns a new shape which can be inflated but
+  /// also deflated.
+  /// Also, an inflated shape is not rounded. It simply has a different size.
+  /// Sweeping a shape with a sphere is a different operation (a Minkowski sum),
+  /// which rounds the sharp corners of a shape.
+  /// The swept sphere radius is a property of the shape itself and can be
+  /// manually updated between collision checks.
+  FCL_REAL m_swept_sphere_radius{0};
 };
 
 /// @defgroup Geometric_Shapes Geometric shapes
@@ -114,7 +152,8 @@ class HPP_FCL_DLLAPI TriangleP : public ShapeBase {
     if (other_ptr == nullptr) return false;
     const TriangleP& other = *other_ptr;
 
-    return a == other.a && b == other.b && c == other.c;
+    return a == other.a && b == other.b && c == other.c &&
+           getSweptSphereRadius() == other.getSweptSphereRadius();
   }
 
  public:
@@ -163,7 +202,9 @@ class HPP_FCL_DLLAPI Box : public ShapeBase {
 
   FCL_REAL minInflationValue() const { return -halfSide.minCoeff(); }
 
-  /// \brief Inflate the box by an amount given by value
+  /// \brief Inflate the box by an amount given by `value`.
+  /// This value can be positive or negative but must always >=
+  /// `minInflationValue()`.
   ///
   /// \param[in] value of the shape inflation.
   ///
@@ -185,7 +226,8 @@ class HPP_FCL_DLLAPI Box : public ShapeBase {
     if (other_ptr == nullptr) return false;
     const Box& other = *other_ptr;
 
-    return halfSide == other.halfSide;
+    return halfSide == other.halfSide &&
+           getSweptSphereRadius() == other.getSweptSphereRadius();
   }
 
  public:
@@ -226,7 +268,9 @@ class HPP_FCL_DLLAPI Sphere : public ShapeBase {
 
   FCL_REAL minInflationValue() const { return -radius; }
 
-  /// \brief Inflate the sphere by an amount given by value
+  /// \brief Inflate the sphere by an amount given by `value`.
+  /// This value can be positive or negative but must always >=
+  /// `minInflationValue()`.
   ///
   /// \param[in] value of the shape inflation.
   ///
@@ -247,7 +291,8 @@ class HPP_FCL_DLLAPI Sphere : public ShapeBase {
     if (other_ptr == nullptr) return false;
     const Sphere& other = *other_ptr;
 
-    return radius == other.radius;
+    return radius == other.radius &&
+           getSweptSphereRadius() == other.getSweptSphereRadius();
   }
 
  public:
@@ -297,7 +342,9 @@ class HPP_FCL_DLLAPI Ellipsoid : public ShapeBase {
 
   FCL_REAL minInflationValue() const { return -radii.minCoeff(); }
 
-  /// \brief Inflate the ellipsoid by an amount given by value
+  /// \brief Inflate the ellipsoid by an amount given by `value`.
+  /// This value can be positive or negative but must always >=
+  /// `minInflationValue()`.
   ///
   /// \param[in] value of the shape inflation.
   ///
@@ -319,7 +366,8 @@ class HPP_FCL_DLLAPI Ellipsoid : public ShapeBase {
     if (other_ptr == nullptr) return false;
     const Ellipsoid& other = *other_ptr;
 
-    return radii == other.radii;
+    return radii == other.radii &&
+           getSweptSphereRadius() == other.getSweptSphereRadius();
   }
 
  public:
@@ -379,7 +427,9 @@ class HPP_FCL_DLLAPI Capsule : public ShapeBase {
 
   FCL_REAL minInflationValue() const { return -radius; }
 
-  /// \brief Inflate the capsule by an amount given by value
+  /// \brief Inflate the capsule by an amount given by `value`.
+  /// This value can be positive or negative but must always >=
+  /// `minInflationValue()`.
   ///
   /// \param[in] value of the shape inflation.
   ///
@@ -401,7 +451,8 @@ class HPP_FCL_DLLAPI Capsule : public ShapeBase {
     if (other_ptr == nullptr) return false;
     const Capsule& other = *other_ptr;
 
-    return radius == other.radius && halfLength == other.halfLength;
+    return radius == other.radius && halfLength == other.halfLength &&
+           getSweptSphereRadius() == other.getSweptSphereRadius();
   }
 
  public:
@@ -456,7 +507,9 @@ class HPP_FCL_DLLAPI Cone : public ShapeBase {
 
   FCL_REAL minInflationValue() const { return -(std::min)(radius, halfLength); }
 
-  /// \brief Inflate the cone by an amount given by value
+  /// \brief Inflate the cone by an amount given by `value`.
+  /// This value can be positive or negative but must always >=
+  /// `minInflationValue()`.
   ///
   /// \param[in] value of the shape inflation.
   ///
@@ -489,7 +542,8 @@ class HPP_FCL_DLLAPI Cone : public ShapeBase {
     if (other_ptr == nullptr) return false;
     const Cone& other = *other_ptr;
 
-    return radius == other.radius && halfLength == other.halfLength;
+    return radius == other.radius && halfLength == other.halfLength &&
+           getSweptSphereRadius() == other.getSweptSphereRadius();
   }
 
  public:
@@ -547,7 +601,9 @@ class HPP_FCL_DLLAPI Cylinder : public ShapeBase {
 
   FCL_REAL minInflationValue() const { return -(std::min)(radius, halfLength); }
 
-  /// \brief Inflate the cylinder by an amount given by value
+  /// \brief Inflate the cylinder by an amount given by `value`.
+  /// This value can be positive or negative but must always >=
+  /// `minInflationValue()`.
   ///
   /// \param[in] value of the shape inflation.
   ///
@@ -569,7 +625,8 @@ class HPP_FCL_DLLAPI Cylinder : public ShapeBase {
     if (other_ptr == nullptr) return false;
     const Cylinder& other = *other_ptr;
 
-    return radius == other.radius && halfLength == other.halfLength;
+    return radius == other.radius && halfLength == other.halfLength &&
+           getSweptSphereRadius() == other.getSweptSphereRadius();
   }
 
  public:
@@ -592,36 +649,33 @@ class HPP_FCL_DLLAPI ConvexBase : public ShapeBase {
   ///          Qhull.
   /// \note hpp-fcl must have been compiled with option \c HPP_FCL_HAS_QHULL set
   ///       to \c ON.
-  static ConvexBase* convexHull(const Vec3f* points, unsigned int num_points,
-                                bool keepTriangles,
+  static ConvexBase* convexHull(std::shared_ptr<std::vector<Vec3f>>& points,
+                                unsigned int num_points, bool keepTriangles,
                                 const char* qhullCommand = NULL);
+
+  // TODO(louis): put this method in private sometime in the future.
+  HPP_FCL_DEPRECATED static ConvexBase* convexHull(
+      const Vec3f* points, unsigned int num_points, bool keepTriangles,
+      const char* qhullCommand = NULL);
 
   virtual ~ConvexBase();
 
-  ///  @brief Clone (deep copy).
-  virtual ConvexBase* clone() const {
-    ConvexBase* copy_ptr = new ConvexBase(*this);
-    ConvexBase& copy = *copy_ptr;
-
-    if (!copy.own_storage_) {
-      copy.points = new Vec3f[copy.num_points];
-      std::copy(points, points + num_points, copy.points);
-    }
-    copy.own_storage_ = true;
-    copy.ShapeBase::operator=(*this);
-
-    return copy_ptr;
-  }
+  /// @brief Clone (deep copy).
+  /// This method is consistent with BVHModel `clone` method.
+  /// The copy constructor is called, which duplicates the data.
+  virtual ConvexBase* clone() const { return new ConvexBase(*this); }
 
   /// @brief Compute AABB
   void computeLocalAABB();
 
-  /// @brief Get node type: a conex polytope
+  /// @brief Get node type: a convex polytope
   NODE_TYPE getNodeType() const { return GEOM_CONVEX; }
 
-  /// @brief An array of the points of the polygon.
-  Vec3f* points;
-  unsigned int num_points;
+#ifdef HPP_FCL_HAS_QHULL
+  /// @brief Builds the double description of the convex polytope, i.e. the set
+  /// of hyperplanes which intersection form the polytope.
+  void buildDoubleDescription();
+#endif
 
   struct HPP_FCL_DLLAPI Neighbors {
     unsigned char count_;
@@ -649,25 +703,60 @@ class HPP_FCL_DLLAPI ConvexBase : public ShapeBase {
 
     bool operator!=(const Neighbors& other) const { return !(*this == other); }
   };
-  /// Neighbors of each vertex.
+
+  /// @brief Above this threshold, the convex polytope is considered large.
+  /// This influcences the way the support function is computed.
+  static constexpr size_t num_vertices_large_convex_threshold = 32;
+
+  /// @brief An array of the points of the polygon.
+  std::shared_ptr<std::vector<Vec3f>> points;
+  unsigned int num_points;
+
+  /// @brief An array of the normals of the polygon.
+  std::shared_ptr<std::vector<Vec3f>> normals;
+  /// @brief An array of the offsets to the normals of the polygon.
+  /// Note: there are as many offsets as normals.
+  std::shared_ptr<std::vector<double>> offsets;
+  unsigned int num_normals_and_offsets;
+
+  /// @brief Neighbors of each vertex.
   /// It is an array of size num_points. For each vertex, it contains the number
-  /// of neighbors and a list of indices to them.
-  Neighbors* neighbors;
+  /// of neighbors and a list of indices pointing to them.
+  std::shared_ptr<std::vector<Neighbors>> neighbors;
 
   /// @brief center of the convex polytope, this is used for collision: center
   /// is guaranteed in the internal of the polytope (as it is convex)
   Vec3f center;
+
+  /// @brief The support warm start polytope contains certain points of `this`
+  /// which are support points in specific directions of space.
+  /// This struct is used to warm start the support function computation for
+  /// large meshes (`num_points` > 32).
+  struct SupportWarmStartPolytope {
+    /// @brief Array of support points to warm start the support function
+    /// computation.
+    std::vector<Vec3f> points;
+
+    /// @brief Indices of the support points warm starts.
+    /// These are the indices of the real convex, not the indices of points in
+    /// the warm start polytope.
+    std::vector<int> indices;
+  };
+
+  /// @brief Number of support warm starts.
+  static constexpr size_t num_support_warm_starts = 14;
+
+  /// @brief Support warm start polytopes.
+  SupportWarmStartPolytope support_warm_starts;
 
  protected:
   /// @brief Construct an uninitialized convex object
   /// Initialization is done with ConvexBase::initialize.
   ConvexBase()
       : ShapeBase(),
-        points(NULL),
         num_points(0),
-        neighbors(NULL),
-        nneighbors_(NULL),
-        own_storage_(false) {}
+        num_normals_and_offsets(0),
+        center(Vec3f::Zero()) {}
 
   /// @brief Initialize the points of the convex shape
   /// This also initializes the ConvexBase::center.
@@ -675,27 +764,38 @@ class HPP_FCL_DLLAPI ConvexBase : public ShapeBase {
   /// \param ownStorage weither the ConvexBase owns the data.
   /// \param points_ list of 3D points  ///
   /// \param num_points_ number of 3D points
-  void initialize(bool ownStorage, Vec3f* points_, unsigned int num_points_);
+  void initialize(std::shared_ptr<std::vector<Vec3f>> points_,
+                  unsigned int num_points_);
 
   /// @brief Set the points of the convex shape.
   ///
   /// \param ownStorage weither the ConvexBase owns the data.
   /// \param points_ list of 3D points  ///
   /// \param num_points_ number of 3D points
-  void set(bool ownStorage, Vec3f* points_, unsigned int num_points_);
+  void set(std::shared_ptr<std::vector<Vec3f>> points_,
+           unsigned int num_points_);
 
   /// @brief Copy constructor
   /// Only the list of neighbors is copied.
   ConvexBase(const ConvexBase& other);
 
-  unsigned int* nneighbors_;
+#ifdef HPP_FCL_HAS_QHULL
+  void buildDoubleDescriptionFromQHullResult(const orgQhull::Qhull& qh);
+#endif
 
-  bool own_storage_;
+  /// @brief Build the support points warm starts.
+  void buildSupportWarmStart();
+
+  /// @brief Array of indices of the neighbors of each vertex.
+  /// Since we don't know a priori the number of neighbors of each vertex, we
+  /// store the indices of the neighbors in a single array.
+  /// The `neighbors` attribute, an array of `Neighbors`, is used to point each
+  /// vertex to the right indices in the `nneighbors_` array.
+  std::shared_ptr<std::vector<unsigned int>> nneighbors_;
 
  private:
   void computeCenter();
 
- private:
   virtual bool isEqual(const CollisionGeometry& _other) const {
     const ConvexBase* other_ptr = dynamic_cast<const ConvexBase*>(&_other);
     if (other_ptr == nullptr) return false;
@@ -703,15 +803,68 @@ class HPP_FCL_DLLAPI ConvexBase : public ShapeBase {
 
     if (num_points != other.num_points) return false;
 
-    for (unsigned int i = 0; i < num_points; ++i) {
-      if (points[i] != other.points[i]) return false;
+    if ((!(points.get()) && other.points.get()) ||
+        (points.get() && !(other.points.get())))
+      return false;
+    if (points.get() && other.points.get()) {
+      const std::vector<Vec3f>& points_ = *points;
+      const std::vector<Vec3f>& other_points_ = *(other.points);
+      for (unsigned int i = 0; i < num_points; ++i) {
+        if (points_[i] != (other_points_)[i]) return false;
+      }
     }
 
-    for (unsigned int i = 0; i < num_points; ++i) {
-      if (neighbors[i] != other.neighbors[i]) return false;
+    if ((!(neighbors.get()) && other.neighbors.get()) ||
+        (neighbors.get() && !(other.neighbors.get())))
+      return false;
+    if (neighbors.get() && other.neighbors.get()) {
+      const std::vector<Neighbors>& neighbors_ = *neighbors;
+      const std::vector<Neighbors>& other_neighbors_ = *(other.neighbors);
+      for (unsigned int i = 0; i < num_points; ++i) {
+        if (neighbors_[i] != other_neighbors_[i]) return false;
+      }
     }
 
-    return center == other.center;
+    if ((!(normals.get()) && other.normals.get()) ||
+        (normals.get() && !(other.normals.get())))
+      return false;
+    if (normals.get() && other.normals.get()) {
+      const std::vector<Vec3f>& normals_ = *normals;
+      const std::vector<Vec3f>& other_normals_ = *(other.normals);
+      for (unsigned int i = 0; i < num_normals_and_offsets; ++i) {
+        if (normals_[i] != other_normals_[i]) return false;
+      }
+    }
+
+    if ((!(offsets.get()) && other.offsets.get()) ||
+        (offsets.get() && !(other.offsets.get())))
+      return false;
+    if (offsets.get() && other.offsets.get()) {
+      const std::vector<double>& offsets_ = *offsets;
+      const std::vector<double>& other_offsets_ = *(other.offsets);
+      for (unsigned int i = 0; i < num_normals_and_offsets; ++i) {
+        if (offsets_[i] != other_offsets_[i]) return false;
+      }
+    }
+
+    if (this->support_warm_starts.points.size() !=
+            other.support_warm_starts.points.size() ||
+        this->support_warm_starts.indices.size() !=
+            other.support_warm_starts.indices.size()) {
+      return false;
+    }
+
+    for (size_t i = 0; i < this->support_warm_starts.points.size(); ++i) {
+      if (this->support_warm_starts.points[i] !=
+              other.support_warm_starts.points[i] ||
+          this->support_warm_starts.indices[i] !=
+              other.support_warm_starts.indices[i]) {
+        return false;
+      }
+    }
+
+    return center == other.center &&
+           getSweptSphereRadius() == other.getSweptSphereRadius();
   }
 
  public:
@@ -721,11 +874,14 @@ class HPP_FCL_DLLAPI ConvexBase : public ShapeBase {
 template <typename PolygonT>
 class Convex;
 
-/// @brief Half Space: this is equivalent to the Plane in ODE. The separation
-/// plane is defined as n * x = d; Points in the negative side of the separation
-/// plane (i.e. {x | n * x < d}) are inside the half space and points in the
-/// positive side of the separation plane (i.e. {x | n * x > d}) are outside the
-/// half space
+/// @brief Half Space: this is equivalent to the Plane in ODE.
+/// A Half space has a priviledged direction: the direction of the normal.
+/// The separation plane is defined as n * x = d; Points in the negative side of
+/// the separation plane (i.e. {x | n * x < d}) are inside the half space and
+/// points in the positive side of the separation plane (i.e. {x | n * x > d})
+/// are outside the half space.
+/// Note: prefer using a Halfspace instead of a Plane if possible, it has better
+/// behavior w.r.t. collision detection algorithms.
 class HPP_FCL_DLLAPI Halfspace : public ShapeBase {
  public:
   /// @brief Construct a half space with normal direction and offset
@@ -754,9 +910,13 @@ class HPP_FCL_DLLAPI Halfspace : public ShapeBase {
   /// @brief Clone *this into a new Halfspace
   virtual Halfspace* clone() const { return new Halfspace(*this); };
 
-  FCL_REAL signedDistance(const Vec3f& p) const { return n.dot(p) - d; }
+  FCL_REAL signedDistance(const Vec3f& p) const {
+    return n.dot(p) - (d + this->getSweptSphereRadius());
+  }
 
-  FCL_REAL distance(const Vec3f& p) const { return std::abs(n.dot(p) - d); }
+  FCL_REAL distance(const Vec3f& p) const {
+    return std::abs(this->signedDistance(p));
+  }
 
   /// @brief Compute AABB
   void computeLocalAABB();
@@ -768,11 +928,13 @@ class HPP_FCL_DLLAPI Halfspace : public ShapeBase {
     return std::numeric_limits<FCL_REAL>::lowest();
   }
 
-  /// \brief Inflate the cylinder by an amount given by value
+  /// \brief Inflate the halfspace by an amount given by `value`.
+  /// This value can be positive or negative but must always >=
+  /// `minInflationValue()`.
   ///
   /// \param[in] value of the shape inflation.
   ///
-  /// \returns a new inflated cylinder and the related transform to account for
+  /// \returns a new inflated halfspace and the related transform to account for
   /// the change of shape frame
   std::pair<Halfspace, Transform3f> inflated(const FCL_REAL value) const {
     if (value <= minInflationValue())
@@ -799,14 +961,18 @@ class HPP_FCL_DLLAPI Halfspace : public ShapeBase {
     if (other_ptr == nullptr) return false;
     const Halfspace& other = *other_ptr;
 
-    return n == other.n && d == other.d;
+    return n == other.n && d == other.d &&
+           getSweptSphereRadius() == other.getSweptSphereRadius();
   }
 
  public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
-/// @brief Infinite plane
+/// @brief Infinite plane.
+/// A plane can be viewed as two half spaces; it has no priviledged direction.
+/// Note: prefer using a Halfspace instead of a Plane if possible, it has better
+/// behavior w.r.t. collision detection algorithms.
 class HPP_FCL_DLLAPI Plane : public ShapeBase {
  public:
   /// @brief Construct a plane with normal direction and offset
@@ -834,9 +1000,22 @@ class HPP_FCL_DLLAPI Plane : public ShapeBase {
   /// @brief Clone *this into a new Plane
   virtual Plane* clone() const { return new Plane(*this); };
 
-  FCL_REAL signedDistance(const Vec3f& p) const { return n.dot(p) - d; }
+  FCL_REAL signedDistance(const Vec3f& p) const {
+    const FCL_REAL dist = n.dot(p) - d;
+    FCL_REAL signed_dist =
+        std::abs(n.dot(p) - d) - this->getSweptSphereRadius();
+    if (dist >= 0) {
+      return signed_dist;
+    }
+    if (signed_dist >= 0) {
+      return -signed_dist;
+    }
+    return signed_dist;
+  }
 
-  FCL_REAL distance(const Vec3f& p) const { return std::abs(n.dot(p) - d); }
+  FCL_REAL distance(const Vec3f& p) const {
+    return std::abs(std::abs(n.dot(p) - d) - this->getSweptSphereRadius());
+  }
 
   /// @brief Compute AABB
   void computeLocalAABB();
@@ -860,7 +1039,8 @@ class HPP_FCL_DLLAPI Plane : public ShapeBase {
     if (other_ptr == nullptr) return false;
     const Plane& other = *other_ptr;
 
-    return n == other.n && d == other.d;
+    return n == other.n && d == other.d &&
+           getSweptSphereRadius() == other.getSweptSphereRadius();
   }
 
  public:

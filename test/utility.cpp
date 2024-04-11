@@ -3,6 +3,8 @@
 #include <hpp/fcl/BV/BV.h>
 #include <hpp/fcl/BVH/BVH_model.h>
 #include <hpp/fcl/shape/geometric_shape_to_BVH_model.h>
+#include <hpp/fcl/collision_utility.h>
+#include <hpp/fcl/fwd.hh>
 
 #include <hpp/fcl/collision.h>
 #include <hpp/fcl/distance.h>
@@ -365,8 +367,8 @@ std::string getNodeTypeName(NODE_TYPE node_type) {
     return std::string("invalid");
 }
 
-Quaternion3f makeQuat(FCL_REAL w, FCL_REAL x, FCL_REAL y, FCL_REAL z) {
-  Quaternion3f q;
+Quatf makeQuat(FCL_REAL w, FCL_REAL x, FCL_REAL y, FCL_REAL z) {
+  Quatf q;
   q.w() = w;
   q.x() = x;
   q.y() = y;
@@ -478,57 +480,151 @@ Convex<Triangle> constructPolytopeFromEllipsoid(const Ellipsoid& ellipsoid) {
   FCL_REAL PHI = (1 + std::sqrt(5)) / 2;
 
   // vertices
-  Vec3f* pts = new Vec3f[12];
-  pts[0] = Vec3f(-1, PHI, 0);
-  pts[1] = Vec3f(1, PHI, 0);
-  pts[2] = Vec3f(-1, -PHI, 0);
-  pts[3] = Vec3f(1, -PHI, 0);
+  std::shared_ptr<std::vector<Vec3f>> pts(new std::vector<Vec3f>({
+      Vec3f(-1, PHI, 0),
+      Vec3f(1, PHI, 0),
+      Vec3f(-1, -PHI, 0),
+      Vec3f(1, -PHI, 0),
 
-  pts[4] = Vec3f(0, -1, PHI);
-  pts[5] = Vec3f(0, 1, PHI);
-  pts[6] = Vec3f(0, -1, -PHI);
-  pts[7] = Vec3f(0, 1, -PHI);
+      Vec3f(0, -1, PHI),
+      Vec3f(0, 1, PHI),
+      Vec3f(0, -1, -PHI),
+      Vec3f(0, 1, -PHI),
 
-  pts[8] = Vec3f(PHI, 0, -1);
-  pts[9] = Vec3f(PHI, 0, 1);
-  pts[10] = Vec3f(-PHI, 0, -1);
-  pts[11] = Vec3f(-PHI, 0, 1);
+      Vec3f(PHI, 0, -1),
+      Vec3f(PHI, 0, 1),
+      Vec3f(-PHI, 0, -1),
+      Vec3f(-PHI, 0, 1),
+  }));
 
-  for (int i = 0; i < 12; ++i) {
-    toEllipsoid(pts[i], ellipsoid);
+  std::vector<Vec3f>& pts_ = *pts;
+  for (size_t i = 0; i < 12; ++i) {
+    toEllipsoid(pts_[i], ellipsoid);
   }
 
   // faces
-  Triangle* tris = new Triangle[20];
-  tris[0].set(0, 11, 5);
-  tris[1].set(0, 5, 1);
-  tris[2].set(0, 1, 7);
-  tris[3].set(0, 7, 10);
-  tris[4].set(0, 10, 11);
+  std::shared_ptr<std::vector<Triangle>> tris(new std::vector<Triangle>(20));
+  (*tris)[0].set(0, 11, 5);
+  (*tris)[1].set(0, 5, 1);
+  (*tris)[2].set(0, 1, 7);
+  (*tris)[3].set(0, 7, 10);
+  (*tris)[4].set(0, 10, 11);
 
-  tris[5].set(1, 5, 9);
-  tris[6].set(5, 11, 4);
-  tris[7].set(11, 10, 2);
-  tris[8].set(10, 7, 6);
-  tris[9].set(7, 1, 8);
+  (*tris)[5].set(1, 5, 9);
+  (*tris)[6].set(5, 11, 4);
+  (*tris)[7].set(11, 10, 2);
+  (*tris)[8].set(10, 7, 6);
+  (*tris)[9].set(7, 1, 8);
 
-  tris[10].set(3, 9, 4);
-  tris[11].set(3, 4, 2);
-  tris[12].set(3, 2, 6);
-  tris[13].set(3, 6, 8);
-  tris[14].set(3, 8, 9);
+  (*tris)[10].set(3, 9, 4);
+  (*tris)[11].set(3, 4, 2);
+  (*tris)[12].set(3, 2, 6);
+  (*tris)[13].set(3, 6, 8);
+  (*tris)[14].set(3, 8, 9);
 
-  tris[15].set(4, 9, 5);
-  tris[16].set(2, 4, 11);
-  tris[17].set(6, 2, 10);
-  tris[18].set(8, 6, 7);
-  tris[19].set(9, 8, 1);
-  return Convex<Triangle>(true,
-                          pts,   // points
+  (*tris)[15].set(4, 9, 5);
+  (*tris)[16].set(2, 4, 11);
+  (*tris)[17].set(6, 2, 10);
+  (*tris)[18].set(8, 6, 7);
+  (*tris)[19].set(9, 8, 1);
+  return Convex<Triangle>(pts,   // points
                           12,    // num_points
                           tris,  // triangles
                           20     // number of triangles
   );
+}
+
+Box makeRandomBox(FCL_REAL min_size, FCL_REAL max_size) {
+  return Box(Vec3f(rand_interval(min_size, max_size),
+                   rand_interval(min_size, max_size),
+                   rand_interval(min_size, max_size)));
+}
+
+Sphere makeRandomSphere(FCL_REAL min_size, FCL_REAL max_size) {
+  return Sphere(rand_interval(min_size, max_size));
+}
+
+Ellipsoid makeRandomEllipsoid(FCL_REAL min_size, FCL_REAL max_size) {
+  return Ellipsoid(Vec3f(rand_interval(min_size, max_size),
+                         rand_interval(min_size, max_size),
+                         rand_interval(min_size, max_size)));
+}
+
+Capsule makeRandomCapsule(std::array<FCL_REAL, 2> min_size,
+                          std::array<FCL_REAL, 2> max_size) {
+  return Capsule(rand_interval(min_size[0], max_size[0]),
+                 rand_interval(min_size[1], max_size[1]));
+}
+
+Cone makeRandomCone(std::array<FCL_REAL, 2> min_size,
+                    std::array<FCL_REAL, 2> max_size) {
+  return Cone(rand_interval(min_size[0], max_size[0]),
+              rand_interval(min_size[1], max_size[1]));
+}
+
+Cylinder makeRandomCylinder(std::array<FCL_REAL, 2> min_size,
+                            std::array<FCL_REAL, 2> max_size) {
+  return Cylinder(rand_interval(min_size[0], max_size[0]),
+                  rand_interval(min_size[1], max_size[1]));
+}
+
+Convex<Triangle> makeRandomConvex(FCL_REAL min_size, FCL_REAL max_size) {
+  Ellipsoid ellipsoid = makeRandomEllipsoid(min_size, max_size);
+  return constructPolytopeFromEllipsoid(ellipsoid);
+}
+
+Plane makeRandomPlane(FCL_REAL min_size, FCL_REAL max_size) {
+  return Plane(Vec3f::Random().normalized(), rand_interval(min_size, max_size));
+}
+
+Halfspace makeRandomHalfspace(FCL_REAL min_size, FCL_REAL max_size) {
+  return Halfspace(Vec3f::Random().normalized(),
+                   rand_interval(min_size, max_size));
+}
+
+std::shared_ptr<ShapeBase> makeRandomGeometry(NODE_TYPE node_type) {
+  switch (node_type) {
+    case GEOM_TRIANGLE:
+      HPP_FCL_THROW_PRETTY(std::string(HPP_FCL_PRETTY_FUNCTION) + " for " +
+                               std::string(get_node_type_name(node_type)) +
+                               " is not yet implemented.",
+                           std::invalid_argument);
+      break;
+    case GEOM_BOX:
+      return std::make_shared<Box>(makeRandomBox(0.1, 1.0));
+      break;
+    case GEOM_SPHERE:
+      return std::make_shared<Sphere>(makeRandomSphere(0.1, 1.0));
+      break;
+    case GEOM_ELLIPSOID:
+      return std::make_shared<Ellipsoid>(makeRandomEllipsoid(0.1, 1.0));
+      break;
+    case GEOM_CAPSULE:
+      return std::make_shared<Capsule>(
+          makeRandomCapsule({0.1, 0.2}, {0.8, 1.0}));
+      break;
+    case GEOM_CONE:
+      return std::make_shared<Cone>(makeRandomCone({0.1, 0.2}, {0.8, 1.0}));
+      break;
+    case GEOM_CYLINDER:
+      return std::make_shared<Cylinder>(
+          makeRandomCylinder({0.1, 0.2}, {0.8, 1.0}));
+      break;
+    case GEOM_CONVEX:
+      return std::make_shared<Convex<Triangle>>(makeRandomConvex(0.1, 1.0));
+      break;
+    case GEOM_PLANE:
+      return std::make_shared<Plane>(makeRandomPlane(0.1, 1.0));
+      break;
+    case GEOM_HALFSPACE:
+      return std::make_shared<Halfspace>(makeRandomHalfspace(0.1, 1.0));
+      break;
+    default:
+      HPP_FCL_THROW_PRETTY(std::string(get_node_type_name(node_type)) +
+                               " is not a primitive shape.",
+                           std::invalid_argument);
+      break;
+  }
 }
 
 }  // namespace fcl

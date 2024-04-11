@@ -226,8 +226,9 @@ std::vector<Vec3f> getBoundVertices(const Cylinder& cylinder,
 std::vector<Vec3f> getBoundVertices(const ConvexBase& convex,
                                     const Transform3f& tf) {
   std::vector<Vec3f> result(convex.num_points);
+  const std::vector<Vec3f>& points_ = *(convex.points);
   for (std::size_t i = 0; i < convex.num_points; ++i) {
-    result[i] = tf.transform(convex.points[i]);
+    result[i] = tf.transform(points_[i]);
   }
 
   return result;
@@ -254,8 +255,10 @@ Halfspace transform(const Halfspace& a, const Transform3f& tf) {
 
   Vec3f n = tf.getRotation() * a.n;
   FCL_REAL d = a.d + n.dot(tf.getTranslation());
+  Halfspace result(n, d);
+  result.setSweptSphereRadius(a.getSweptSphereRadius());
 
-  return Halfspace(n, d);
+  return result;
 }
 
 Plane transform(const Plane& a, const Transform3f& tf) {
@@ -267,8 +270,23 @@ Plane transform(const Plane& a, const Transform3f& tf) {
 
   Vec3f n = tf.getRotation() * a.n;
   FCL_REAL d = a.d + n.dot(tf.getTranslation());
+  Plane result(n, d);
+  result.setSweptSphereRadius(a.getSweptSphereRadius());
 
-  return Plane(n, d);
+  return result;
+}
+
+std::array<Halfspace, 2> transformToHalfspaces(const Plane& a,
+                                               const Transform3f& tf) {
+  // A plane can be represented by two halfspaces
+
+  Vec3f n = tf.getRotation() * a.n;
+  FCL_REAL d = a.d + n.dot(tf.getTranslation());
+  std::array<Halfspace, 2> result = {Halfspace(n, d), Halfspace(-n, -d)};
+  result[0].setSweptSphereRadius(a.getSweptSphereRadius());
+  result[1].setSweptSphereRadius(a.getSweptSphereRadius());
+
+  return result;
 }
 
 template <>
@@ -354,8 +372,9 @@ void computeBV<AABB, ConvexBase>(const ConvexBase& s, const Transform3f& tf,
   const Vec3f& T = tf.getTranslation();
 
   AABB bv_;
+  const std::vector<Vec3f>& points_ = *(s.points);
   for (std::size_t i = 0; i < s.num_points; ++i) {
-    Vec3f new_p = R * s.points[i] + T;
+    Vec3f new_p = R * points_[i] + T;
     bv_ += new_p;
   }
 
@@ -438,6 +457,10 @@ void computeBV<AABB, Plane>(const Plane& s, const Transform3f& tf, AABB& bv) {
 
 template <>
 void computeBV<OBB, Box>(const Box& s, const Transform3f& tf, OBB& bv) {
+  if (s.getSweptSphereRadius() > 0) {
+    HPP_FCL_THROW_PRETTY("Swept-sphere radius not yet supported.",
+                         std::runtime_error);
+  }
   const Matrix3f& R = tf.getRotation();
   const Vec3f& T = tf.getTranslation();
 
@@ -448,6 +471,10 @@ void computeBV<OBB, Box>(const Box& s, const Transform3f& tf, OBB& bv) {
 
 template <>
 void computeBV<OBB, Sphere>(const Sphere& s, const Transform3f& tf, OBB& bv) {
+  if (s.getSweptSphereRadius() > 0) {
+    HPP_FCL_THROW_PRETTY("Swept-sphere radius not yet supported.",
+                         std::runtime_error);
+  }
   const Vec3f& T = tf.getTranslation();
 
   bv.To.noalias() = T;
@@ -457,6 +484,10 @@ void computeBV<OBB, Sphere>(const Sphere& s, const Transform3f& tf, OBB& bv) {
 
 template <>
 void computeBV<OBB, Capsule>(const Capsule& s, const Transform3f& tf, OBB& bv) {
+  if (s.getSweptSphereRadius() > 0) {
+    HPP_FCL_THROW_PRETTY("Swept-sphere radius not yet supported.",
+                         std::runtime_error);
+  }
   const Matrix3f& R = tf.getRotation();
   const Vec3f& T = tf.getTranslation();
 
@@ -467,6 +498,10 @@ void computeBV<OBB, Capsule>(const Capsule& s, const Transform3f& tf, OBB& bv) {
 
 template <>
 void computeBV<OBB, Cone>(const Cone& s, const Transform3f& tf, OBB& bv) {
+  if (s.getSweptSphereRadius() > 0) {
+    HPP_FCL_THROW_PRETTY("Swept-sphere radius not yet supported.",
+                         std::runtime_error);
+  }
   const Matrix3f& R = tf.getRotation();
   const Vec3f& T = tf.getTranslation();
 
@@ -478,6 +513,10 @@ void computeBV<OBB, Cone>(const Cone& s, const Transform3f& tf, OBB& bv) {
 template <>
 void computeBV<OBB, Cylinder>(const Cylinder& s, const Transform3f& tf,
                               OBB& bv) {
+  if (s.getSweptSphereRadius() > 0) {
+    HPP_FCL_THROW_PRETTY("Swept-sphere radius not yet supported.",
+                         std::runtime_error);
+  }
   const Matrix3f& R = tf.getRotation();
   const Vec3f& T = tf.getTranslation();
 
@@ -489,10 +528,14 @@ void computeBV<OBB, Cylinder>(const Cylinder& s, const Transform3f& tf,
 template <>
 void computeBV<OBB, ConvexBase>(const ConvexBase& s, const Transform3f& tf,
                                 OBB& bv) {
+  if (s.getSweptSphereRadius() > 0) {
+    HPP_FCL_THROW_PRETTY("Swept-sphere radius not yet supported.",
+                         std::runtime_error);
+  }
   const Matrix3f& R = tf.getRotation();
   const Vec3f& T = tf.getTranslation();
 
-  fit(s.points, s.num_points, bv);
+  fit(s.points->data(), s.num_points, bv);
 
   bv.axes.applyOnTheLeft(R);
 
@@ -500,7 +543,12 @@ void computeBV<OBB, ConvexBase>(const ConvexBase& s, const Transform3f& tf,
 }
 
 template <>
-void computeBV<OBB, Halfspace>(const Halfspace&, const Transform3f&, OBB& bv) {
+void computeBV<OBB, Halfspace>(const Halfspace& s, const Transform3f&,
+                               OBB& bv) {
+  if (s.getSweptSphereRadius() > 0) {
+    HPP_FCL_THROW_PRETTY("Swept-sphere radius not yet supported.",
+                         std::runtime_error);
+  }
   /// Half space can only have very rough OBB
   bv.axes.setIdentity();
   bv.To.setZero();
@@ -508,7 +556,12 @@ void computeBV<OBB, Halfspace>(const Halfspace&, const Transform3f&, OBB& bv) {
 }
 
 template <>
-void computeBV<RSS, Halfspace>(const Halfspace&, const Transform3f&, RSS& bv) {
+void computeBV<RSS, Halfspace>(const Halfspace& s, const Transform3f&,
+                               RSS& bv) {
+  if (s.getSweptSphereRadius() > 0) {
+    HPP_FCL_THROW_PRETTY("Swept-sphere radius not yet supported.",
+                         std::runtime_error);
+  }
   /// Half space can only have very rough RSS
   bv.axes.setIdentity();
   bv.Tr.setZero();
@@ -519,6 +572,10 @@ void computeBV<RSS, Halfspace>(const Halfspace&, const Transform3f&, RSS& bv) {
 template <>
 void computeBV<OBBRSS, Halfspace>(const Halfspace& s, const Transform3f& tf,
                                   OBBRSS& bv) {
+  if (s.getSweptSphereRadius() > 0) {
+    HPP_FCL_THROW_PRETTY("Swept-sphere radius not yet supported.",
+                         std::runtime_error);
+  }
   computeBV<OBB, Halfspace>(s, tf, bv.obb);
   computeBV<RSS, Halfspace>(s, tf, bv.rss);
 }
@@ -526,6 +583,10 @@ void computeBV<OBBRSS, Halfspace>(const Halfspace& s, const Transform3f& tf,
 template <>
 void computeBV<kIOS, Halfspace>(const Halfspace& s, const Transform3f& tf,
                                 kIOS& bv) {
+  if (s.getSweptSphereRadius() > 0) {
+    HPP_FCL_THROW_PRETTY("Swept-sphere radius not yet supported.",
+                         std::runtime_error);
+  }
   bv.num_spheres = 1;
   computeBV<OBB, Halfspace>(s, tf, bv.obb);
   bv.spheres[0].o = Vec3f();
@@ -535,6 +596,10 @@ void computeBV<kIOS, Halfspace>(const Halfspace& s, const Transform3f& tf,
 template <>
 void computeBV<KDOP<16>, Halfspace>(const Halfspace& s, const Transform3f& tf,
                                     KDOP<16>& bv) {
+  if (s.getSweptSphereRadius() > 0) {
+    HPP_FCL_THROW_PRETTY("Swept-sphere radius not yet supported.",
+                         std::runtime_error);
+  }
   Halfspace new_s = transform(s, tf);
   const Vec3f& n = new_s.n;
   const FCL_REAL& d = new_s.d;
@@ -591,6 +656,10 @@ void computeBV<KDOP<16>, Halfspace>(const Halfspace& s, const Transform3f& tf,
 template <>
 void computeBV<KDOP<18>, Halfspace>(const Halfspace& s, const Transform3f& tf,
                                     KDOP<18>& bv) {
+  if (s.getSweptSphereRadius() > 0) {
+    HPP_FCL_THROW_PRETTY("Swept-sphere radius not yet supported.",
+                         std::runtime_error);
+  }
   Halfspace new_s = transform(s, tf);
   const Vec3f& n = new_s.n;
   const FCL_REAL& d = new_s.d;
@@ -653,6 +722,10 @@ void computeBV<KDOP<18>, Halfspace>(const Halfspace& s, const Transform3f& tf,
 template <>
 void computeBV<KDOP<24>, Halfspace>(const Halfspace& s, const Transform3f& tf,
                                     KDOP<24>& bv) {
+  if (s.getSweptSphereRadius() > 0) {
+    HPP_FCL_THROW_PRETTY("Swept-sphere radius not yet supported.",
+                         std::runtime_error);
+  }
   Halfspace new_s = transform(s, tf);
   const Vec3f& n = new_s.n;
   const FCL_REAL& d = new_s.d;
@@ -729,6 +802,10 @@ void computeBV<KDOP<24>, Halfspace>(const Halfspace& s, const Transform3f& tf,
 
 template <>
 void computeBV<OBB, Plane>(const Plane& s, const Transform3f& tf, OBB& bv) {
+  if (s.getSweptSphereRadius() > 0) {
+    HPP_FCL_THROW_PRETTY("Swept-sphere radius not yet supported.",
+                         std::runtime_error);
+  }
   Vec3f n = tf.getRotation() * s.n;
   generateCoordinateSystem(n, bv.axes.col(1), bv.axes.col(2));
   bv.axes.col(0).noalias() = n;
@@ -743,6 +820,10 @@ void computeBV<OBB, Plane>(const Plane& s, const Transform3f& tf, OBB& bv) {
 
 template <>
 void computeBV<RSS, Plane>(const Plane& s, const Transform3f& tf, RSS& bv) {
+  if (s.getSweptSphereRadius() > 0) {
+    HPP_FCL_THROW_PRETTY("Swept-sphere radius not yet supported.",
+                         std::runtime_error);
+  }
   Vec3f n = tf.getRotation() * s.n;
 
   generateCoordinateSystem(n, bv.axes.col(1), bv.axes.col(2));
@@ -760,12 +841,20 @@ void computeBV<RSS, Plane>(const Plane& s, const Transform3f& tf, RSS& bv) {
 template <>
 void computeBV<OBBRSS, Plane>(const Plane& s, const Transform3f& tf,
                               OBBRSS& bv) {
+  if (s.getSweptSphereRadius() > 0) {
+    HPP_FCL_THROW_PRETTY("Swept-sphere radius not yet supported.",
+                         std::runtime_error);
+  }
   computeBV<OBB, Plane>(s, tf, bv.obb);
   computeBV<RSS, Plane>(s, tf, bv.rss);
 }
 
 template <>
 void computeBV<kIOS, Plane>(const Plane& s, const Transform3f& tf, kIOS& bv) {
+  if (s.getSweptSphereRadius() > 0) {
+    HPP_FCL_THROW_PRETTY("Swept-sphere radius not yet supported.",
+                         std::runtime_error);
+  }
   bv.num_spheres = 1;
   computeBV<OBB, Plane>(s, tf, bv.obb);
   bv.spheres[0].o = Vec3f();
@@ -775,6 +864,10 @@ void computeBV<kIOS, Plane>(const Plane& s, const Transform3f& tf, kIOS& bv) {
 template <>
 void computeBV<KDOP<16>, Plane>(const Plane& s, const Transform3f& tf,
                                 KDOP<16>& bv) {
+  if (s.getSweptSphereRadius() > 0) {
+    HPP_FCL_THROW_PRETTY("Swept-sphere radius not yet supported.",
+                         std::runtime_error);
+  }
   Plane new_s = transform(s, tf);
   const Vec3f& n = new_s.n;
   const FCL_REAL& d = new_s.d;
@@ -817,6 +910,10 @@ void computeBV<KDOP<16>, Plane>(const Plane& s, const Transform3f& tf,
 template <>
 void computeBV<KDOP<18>, Plane>(const Plane& s, const Transform3f& tf,
                                 KDOP<18>& bv) {
+  if (s.getSweptSphereRadius() > 0) {
+    HPP_FCL_THROW_PRETTY("Swept-sphere radius not yet supported.",
+                         std::runtime_error);
+  }
   Plane new_s = transform(s, tf);
   const Vec3f& n = new_s.n;
   const FCL_REAL& d = new_s.d;
@@ -861,6 +958,10 @@ void computeBV<KDOP<18>, Plane>(const Plane& s, const Transform3f& tf,
 template <>
 void computeBV<KDOP<24>, Plane>(const Plane& s, const Transform3f& tf,
                                 KDOP<24>& bv) {
+  if (s.getSweptSphereRadius() > 0) {
+    HPP_FCL_THROW_PRETTY("Swept-sphere radius not yet supported.",
+                         std::runtime_error);
+  }
   Plane new_s = transform(s, tf);
   const Vec3f& n = new_s.n;
   const FCL_REAL& d = new_s.d;

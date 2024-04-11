@@ -42,6 +42,7 @@
 #include <hpp/fcl/narrowphase/narrowphase.h>
 #include <hpp/fcl/shape/geometric_shapes.h>
 #include <hpp/fcl/internal/tools.h>
+#include <hpp/fcl/internal/shape_shape_func.h>
 
 #include "utility.h"
 
@@ -49,7 +50,7 @@ using hpp::fcl::FCL_REAL;
 using hpp::fcl::GJKSolver;
 using hpp::fcl::GJKVariant;
 using hpp::fcl::Matrix3f;
-using hpp::fcl::Quaternion3f;
+using hpp::fcl::Quatf;
 using hpp::fcl::Transform3f;
 using hpp::fcl::TriangleP;
 using hpp::fcl::Vec3f;
@@ -76,7 +77,7 @@ void test_gjk_distance_triangle_triangle(
   std::size_t N = 10000;
   GJKSolver solver;
   if (enable_gjk_nesterov_acceleration)
-    solver.gjk_variant = GJKVariant::NesterovAcceleration;
+    solver.gjk.gjk_variant = GJKVariant::NesterovAcceleration;
   Transform3f tf1, tf2;
   Vec3f p1, p2, a1, a2;
   Matrix3f M;
@@ -103,8 +104,8 @@ void test_gjk_distance_triangle_triangle(
       Q2_loc = Vec3f(-10.926, -1.284259033203125, 3.7281499023437501);
       Q3_loc = Vec3f(-10.926, -1.2866180419921875, 3.72335400390625);
       Transform3f tf(
-          Quaternion3f(-0.42437287410898855, -0.26862477561450587,
-                       -0.46249645019513175, 0.73064726592483387),
+          Quatf(-0.42437287410898855, -0.26862477561450587,
+                -0.46249645019513175, 0.73064726592483387),
           Vec3f(-12.824601270753471, -1.6840516940066426, 3.8914453043793844));
       tf1 = tf;
     } else if (i == 1) {
@@ -136,15 +137,24 @@ void test_gjk_distance_triangle_triangle(
     TriangleP tri1(P1_loc, P2_loc, P3_loc);
     TriangleP tri2(Q1_loc, Q2_loc, Q3_loc);
     Vec3f normal;
+    const bool compute_penetration = true;
+    hpp::fcl::DistanceRequest request(compute_penetration, compute_penetration);
+    hpp::fcl::DistanceResult result;
 
-    bool res;
     start = clock();
-    res = solver.shapeDistance(tri1, tf1, tri2, tf2, distance, p1, p2, normal);
+    // The specialized function TriangleP-TriangleP calls GJK to check for
+    // collision and compute the witness points but it does not use EPA to
+    // compute the penetration depth.
+    distance = hpp::fcl::ShapeShapeDistance<TriangleP, TriangleP>(
+        &tri1, tf1, &tri2, tf2, &solver, request, result);
     end = clock();
+    p1 = result.nearest_points[0];
+    p2 = result.nearest_points[1];
+    normal = result.normal;
+    bool res = (distance <= 0);
     results[i].timeGjk = end - start;
-    results[i].collision = !res;
-    assert(res == (distance > 0));
-    if (!res) {
+    results[i].collision = res;
+    if (res) {
       Vec3f c1, c2, normal2;
       ++nCol;
       // check that moving triangle 2 by the penetration depth in the
@@ -152,9 +162,14 @@ void test_gjk_distance_triangle_triangle(
       FCL_REAL penetration_depth(-distance);
       assert(penetration_depth >= 0);
       tf2.setTranslation((penetration_depth + 10 - 4) * normal);
-      res =
-          solver.shapeDistance(tri1, tf1, tri2, tf2, distance, c1, c2, normal2);
-      if (!res) {
+      result.clear();
+      distance = hpp::fcl::ShapeShapeDistance<TriangleP, TriangleP>(
+          &tri1, tf1, &tri2, tf2, &solver, request, result);
+      c1 = result.nearest_points[0];
+      c2 = result.nearest_points[1];
+      normal2 = result.normal;
+      res = (distance <= 0);
+      if (res) {
         std::cerr << "P1 = " << P1_loc.format(tuple) << std::endl;
         std::cerr << "P2 = " << P2_loc.format(tuple) << std::endl;
         std::cerr << "P3 = " << P3_loc.format(tuple) << std::endl;
@@ -311,65 +326,91 @@ void test_gjk_distance_triangle_triangle(
             << "s" << std::endl;
 }
 
-BOOST_AUTO_TEST_CASE(distance_triangle_triangle_1) {
+BOOST_AUTO_TEST_CASE(distance_triangle_triangle) {
   test_gjk_distance_triangle_triangle(false);
+}
+
+BOOST_AUTO_TEST_CASE(distance_triangle_triangle_nesterov) {
   test_gjk_distance_triangle_triangle(true);
 }
 
 void test_gjk_unit_sphere(FCL_REAL center_distance, Vec3f ray,
-                          bool expect_collision,
+                          double swept_sphere_radius,
                           bool use_gjk_nesterov_acceleration) {
   using namespace hpp::fcl;
-  Sphere sphere(1.);
+  const FCL_REAL r = 1.0;
+  Sphere sphere(r);
+  sphere.setSweptSphereRadius(swept_sphere_radius);
 
   typedef Eigen::Matrix<FCL_REAL, 4, 1> Vec4f;
-  Transform3f tf0(Quaternion3f(Vec4f::Random().normalized()), Vec3f::Zero()),
-      tf1(Quaternion3f(Vec4f::Random().normalized()), center_distance * ray);
+  Transform3f tf0(Quatf(Vec4f::Random().normalized()), Vec3f::Zero());
+  Transform3f tf1(Quatf(Vec4f::Random().normalized()), center_distance * ray);
+
+  bool expect_collision = center_distance <= 2 * (r + swept_sphere_radius);
 
   details::MinkowskiDiff shape;
-  shape.set(&sphere, &sphere, tf0, tf1);
+  shape.set<details::SupportOptions::NoSweptSphere>(&sphere, &sphere, tf0, tf1);
 
-  BOOST_CHECK_EQUAL(shape.inflation[0], sphere.radius);
-  BOOST_CHECK_EQUAL(shape.inflation[1], sphere.radius);
+  BOOST_CHECK_EQUAL(shape.swept_sphere_radius[0],
+                    sphere.radius + sphere.getSweptSphereRadius());
+  BOOST_CHECK_EQUAL(shape.swept_sphere_radius[1],
+                    sphere.radius + sphere.getSweptSphereRadius());
 
   details::GJK gjk(2, 1e-6);
   if (use_gjk_nesterov_acceleration)
     gjk.gjk_variant = GJKVariant::NesterovAcceleration;
   details::GJK::Status status = gjk.evaluate(shape, Vec3f(1, 0, 0));
 
-  if (expect_collision)
-    BOOST_CHECK_EQUAL(status, details::GJK::Inside);
-  else
-    BOOST_CHECK_EQUAL(status, details::GJK::Valid);
+  if (expect_collision) {
+    BOOST_CHECK((status == details::GJK::Collision) ||
+                (status == details::GJK::CollisionWithPenetrationInformation));
+    // For sphere-sphere, if the distance between the centers is above GJK's
+    // tolerance, the `Collision` status should never be returned.
+    BOOST_CHECK(status == details::GJK::CollisionWithPenetrationInformation &&
+                center_distance > gjk.getTolerance());
+  } else {
+    BOOST_CHECK_EQUAL(status, details::GJK::NoCollision);
+  }
 
-  Vec3f w0, w1;
-  gjk.getClosestPoints(shape, w0, w1);
+  Vec3f w0, w1, normal;
+  gjk.getWitnessPointsAndNormal(shape, w0, w1, normal);
 
-  Vec3f w0_expected(tf0.inverse().transform(tf0.getTranslation() + ray));
-  Vec3f w1_expected(tf0.inverse().transform(tf1.getTranslation() - ray));
+  Vec3f w0_expected(tf0.inverse().transform(tf0.getTranslation() + ray) +
+                    swept_sphere_radius * normal);
+  Vec3f w1_expected(tf0.inverse().transform(tf1.getTranslation() - ray) -
+                    swept_sphere_radius * normal);
 
   EIGEN_VECTOR_IS_APPROX(w0, w0_expected, 1e-10);
   EIGEN_VECTOR_IS_APPROX(w1, w1_expected, 1e-10);
 }
 
 BOOST_AUTO_TEST_CASE(sphere_sphere) {
-  test_gjk_unit_sphere(3., Vec3f(1, 0, 0), false, false);
-  test_gjk_unit_sphere(3., Vec3f(1, 0, 0), false, true);
-  test_gjk_unit_sphere(2.01, Vec3f(1, 0, 0), false, false);
-  test_gjk_unit_sphere(2.01, Vec3f(1, 0, 0), false, true);
-  test_gjk_unit_sphere(2., Vec3f(1, 0, 0), true, false);
-  test_gjk_unit_sphere(2., Vec3f(1, 0, 0), true, true);
-  test_gjk_unit_sphere(1., Vec3f(1, 0, 0), true, false);
-  test_gjk_unit_sphere(1., Vec3f(1, 0, 0), true, true);
+  std::array<bool, 2> use_nesterov_acceleration = {false, true};
+  std::array<double, 5> swept_sphere_radius = {0., 0.1, 1., 10., 100.};
+  for (bool nesterov_acceleration : use_nesterov_acceleration) {
+    for (double ssr : swept_sphere_radius) {
+      test_gjk_unit_sphere(3, Vec3f(1, 0, 0), ssr, nesterov_acceleration);
 
-  test_gjk_unit_sphere(3., Vec3f::Random().normalized(), false, false);
-  test_gjk_unit_sphere(3., Vec3f::Random().normalized(), false, true);
-  test_gjk_unit_sphere(2.01, Vec3f::Random().normalized(), false, false);
-  test_gjk_unit_sphere(2.01, Vec3f::Random().normalized(), false, true);
-  test_gjk_unit_sphere(2., Vec3f::Random().normalized(), true, false);
-  test_gjk_unit_sphere(2., Vec3f::Random().normalized(), true, true);
-  test_gjk_unit_sphere(1., Vec3f::Random().normalized(), true, false);
-  test_gjk_unit_sphere(1., Vec3f::Random().normalized(), true, true);
+      test_gjk_unit_sphere(2.01, Vec3f(1, 0, 0), ssr, nesterov_acceleration);
+
+      test_gjk_unit_sphere(2.0, Vec3f(1, 0, 0), ssr, nesterov_acceleration);
+
+      test_gjk_unit_sphere(1.0, Vec3f(1, 0, 0), ssr, nesterov_acceleration);
+
+      // Random rotation
+      test_gjk_unit_sphere(3, Vec3f::Random().normalized(), ssr,
+                           nesterov_acceleration);
+
+      test_gjk_unit_sphere(2.01, Vec3f::Random().normalized(), ssr,
+                           nesterov_acceleration);
+
+      test_gjk_unit_sphere(2.0, Vec3f::Random().normalized(), ssr,
+                           nesterov_acceleration);
+
+      test_gjk_unit_sphere(1.0, Vec3f::Random().normalized(), ssr,
+                           nesterov_acceleration);
+    }
+  }
 }
 
 void test_gjk_triangle_capsule(Vec3f T, bool expect_collision,
@@ -383,36 +424,42 @@ void test_gjk_triangle_capsule(Vec3f T, bool expect_collision,
   tf1.setTranslation(T);
 
   details::MinkowskiDiff shape;
-  shape.set(&capsule, &triangle, tf0, tf1);
+  // No need to take into account swept-sphere radius in supports computation
+  // when using GJK/EPA; after they have converged, these algos will correctly
+  // handle the swept-sphere radius of the shapes.
+  shape.set<details::SupportOptions::NoSweptSphere>(&capsule, &triangle, tf0,
+                                                    tf1);
 
-  BOOST_CHECK_EQUAL(shape.inflation[0], capsule.radius);
-  BOOST_CHECK_EQUAL(shape.inflation[1], 0.);
+  BOOST_CHECK_EQUAL(shape.swept_sphere_radius[0], capsule.radius);
+  BOOST_CHECK_EQUAL(shape.swept_sphere_radius[1], 0.);
 
   details::GJK gjk(10, 1e-6);
   if (use_gjk_nesterov_acceleration)
     gjk.gjk_variant = GJKVariant::NesterovAcceleration;
   details::GJK::Status status = gjk.evaluate(shape, Vec3f(1, 0, 0));
 
-  if (expect_collision)
-    BOOST_CHECK_EQUAL(status, details::GJK::Inside);
-  else {
-    BOOST_CHECK_EQUAL(status, details::GJK::Valid);
+  if (expect_collision) {
+    BOOST_CHECK((status == details::GJK::Collision) ||
+                (status == details::GJK::CollisionWithPenetrationInformation));
+  } else {
+    BOOST_CHECK_EQUAL(status, details::GJK::NoCollision);
 
     // Check that guess works as expected
     Vec3f guess = gjk.getGuessFromSimplex();
     details::GJK gjk2(3, 1e-6);
     details::GJK::Status status2 = gjk2.evaluate(shape, guess);
-    BOOST_CHECK_EQUAL(status2, details::GJK::Valid);
+    BOOST_CHECK_EQUAL(status2, details::GJK::NoCollision);
   }
 
-  Vec3f w0, w1;
-  if (status == details::GJK::Valid || gjk.hasPenetrationInformation(shape)) {
-    gjk.getClosestPoints(shape, w0, w1);
+  Vec3f w0, w1, normal;
+  if (status == details::GJK::NoCollision ||
+      status == details::GJK::CollisionWithPenetrationInformation) {
+    gjk.getWitnessPointsAndNormal(shape, w0, w1, normal);
   } else {
-    details::EPA epa(128, 64, 255, 1e-6);
+    details::EPA epa(64, 1e-6);
     details::EPA::Status epa_status = epa.evaluate(gjk, Vec3f(1, 0, 0));
     BOOST_CHECK_EQUAL(epa_status, details::EPA::AccuracyReached);
-    epa.getClosestPoints(shape, w0, w1);
+    epa.getWitnessPointsAndNormal(shape, w0, w1, normal);
   }
 
   EIGEN_VECTOR_IS_APPROX(w0, w0_expected, 1e-10);

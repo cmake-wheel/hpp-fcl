@@ -38,7 +38,7 @@
 #ifndef HPP_FCL_SHAPE_CONVEX_H
 #define HPP_FCL_SHAPE_CONVEX_H
 
-#include <hpp/fcl/shape/geometric_shapes.h>
+#include "hpp/fcl/shape/geometric_shapes.h"
 
 namespace hpp {
 namespace fcl {
@@ -50,7 +50,7 @@ template <typename PolygonT>
 class Convex : public ConvexBase {
  public:
   /// @brief Construct an uninitialized convex object
-  Convex() : ConvexBase(), polygons(NULL), num_polygons(0) {}
+  Convex() : ConvexBase(), num_polygons(0) {}
 
   /// @brief Constructing a convex, providing normal and offset of each polytype
   /// surface, and the points and shape topology information \param ownStorage
@@ -61,20 +61,15 @@ class Convex : public ConvexBase {
   /// \param polygons_ \copydoc Convex::polygons
   /// \param num_polygons_ the number of polygons.
   /// \note num_polygons_ is not the allocated size of polygons_.
-  Convex(bool ownStorage, Vec3f* points_, unsigned int num_points_,
-         PolygonT* polygons_, unsigned int num_polygons_);
+  Convex(std::shared_ptr<std::vector<Vec3f>> points_, unsigned int num_points_,
+         std::shared_ptr<std::vector<PolygonT>> polygons_,
+         unsigned int num_polygons_);
 
   /// @brief Copy constructor
   /// Only the list of neighbors is copied.
   Convex(const Convex& other);
 
   ~Convex();
-
-  /// @brief An array of PolygonT object.
-  /// PolygonT should contains a list of vertices for each polygon,
-  /// in counter clockwise order.
-  PolygonT* polygons;
-  unsigned int num_polygons;
 
   /// based on http://number-none.com/blow/inertia/bb_inertia.doc
   Matrix3f computeMomentofInertia() const;
@@ -94,11 +89,18 @@ class Convex : public ConvexBase {
   /// \param num_polygons the number of polygons.
   /// \note num_polygons is not the allocated size of polygons.
   ///
-  void set(bool ownStorage, Vec3f* points, unsigned int num_points,
-           PolygonT* polygons, unsigned int num_polygons);
+  void set(std::shared_ptr<std::vector<Vec3f>> points, unsigned int num_points,
+           std::shared_ptr<std::vector<PolygonT>> polygons,
+           unsigned int num_polygons);
 
-  ///  @brief Clone (deep copy).
+  /// @brief Clone (deep copy)
   virtual Convex<PolygonT>* clone() const;
+
+  /// @brief An array of PolygonT object.
+  /// PolygonT should contains a list of vertices for each polygon,
+  /// in counter clockwise order.
+  std::shared_ptr<std::vector<PolygonT>> polygons;
+  unsigned int num_polygons;
 
  protected:
   void fillNeighbors();
@@ -108,6 +110,6 @@ class Convex : public ConvexBase {
 
 }  // namespace hpp
 
-#include <hpp/fcl/shape/details/convex.hxx>
+#include "hpp/fcl/shape/details/convex.hxx"
 
 #endif

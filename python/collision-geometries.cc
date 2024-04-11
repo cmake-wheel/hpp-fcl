@@ -52,6 +52,7 @@
 #include <hpp/fcl/serialization/convex.h>
 
 #include "pickle.hh"
+#include "serializable.hh"
 
 #ifdef HPP_FCL_HAS_DOXYGEN_AUTODOC
 // FIXME for a reason I do not understand, doxygen fails to understand that
@@ -68,6 +69,7 @@
 
 using namespace boost::python;
 using namespace hpp::fcl;
+using namespace hpp::fcl::python;
 namespace dv = doxygen::visitor;
 namespace bp = boost::python;
 
@@ -83,16 +85,19 @@ struct BVHModelBaseWrapper {
 
   static Vec3f& vertex(BVHModelBase& bvh, unsigned int i) {
     if (i >= bvh.num_vertices) throw std::out_of_range("index is out of range");
-    return bvh.vertices[i];
+    return (*(bvh.vertices))[i];
   }
 
   static RefRowMatrixX3 vertices(BVHModelBase& bvh) {
-    return MapRowMatrixX3(bvh.vertices[0].data(), bvh.num_vertices, 3);
+    if (bvh.num_vertices > 0)
+      return MapRowMatrixX3(bvh.vertices->data()->data(), bvh.num_vertices, 3);
+    else
+      return MapRowMatrixX3(NULL, bvh.num_vertices, 3);
   }
 
   static Triangle tri_indices(const BVHModelBase& bvh, unsigned int i) {
     if (i >= bvh.num_tris) throw std::out_of_range("index is out of range");
-    return bvh.tri_indices[i];
+    return (*bvh.tri_indices)[i];
   }
 };
 
@@ -101,7 +106,7 @@ void exposeBVHModel(const std::string& bvname) {
   typedef BVHModel<BV> BVH;
 
   const std::string type_name = "BVHModel" + bvname;
-  class_<BVH, bases<BVHModelBase>, shared_ptr<BVH> >(
+  class_<BVH, bases<BVHModelBase>, shared_ptr<BVH>>(
       type_name.c_str(), doxygen::class_doc<BVH>(), no_init)
       .def(dv::init<BVH>())
       .def(dv::init<BVH, const BVH&>())
@@ -110,7 +115,8 @@ void exposeBVHModel(const std::string& bvname) {
       .DEF_CLASS_FUNC(BVHModelBase, memUsage)
       .def("clone", &BVH::clone, doxygen::member_func_doc(&BVH::clone),
            return_value_policy<manage_new_object>())
-      .def_pickle(PickleObject<BVH>());
+      .def_pickle(PickleObject<BVH>())
+      .def(SerializableVisitor<BVH>());
 }
 
 template <typename BV>
@@ -120,12 +126,12 @@ void exposeHeightField(const std::string& bvname) {
   typedef typename Geometry::Node Node;
 
   const std::string type_name = "HeightField" + bvname;
-  class_<Geometry, bases<Base>, shared_ptr<Geometry> >(
+  class_<Geometry, bases<Base>, shared_ptr<Geometry>>(
       type_name.c_str(), doxygen::class_doc<Geometry>(), no_init)
-      .def(dv::init<HeightField<BV> >())
+      .def(dv::init<HeightField<BV>>())
       .def(dv::init<HeightField<BV>, const HeightField<BV>&>())
       .def(dv::init<HeightField<BV>, FCL_REAL, FCL_REAL, const MatrixXf&,
-                    bp::optional<FCL_REAL> >())
+                    bp::optional<FCL_REAL>>())
 
       .DEF_CLASS_FUNC(Geometry, getXDim)
       .DEF_CLASS_FUNC(Geometry, getYDim)
@@ -150,30 +156,57 @@ void exposeHeightField(const std::string& bvname) {
            doxygen::member_func_doc((Node & (Geometry::*)(unsigned int)) &
                                     Geometry::getBV),
            bp::return_internal_reference<>())
-      .def_pickle(PickleObject<Geometry>());
+      .def_pickle(PickleObject<Geometry>())
+      .def(SerializableVisitor<Geometry>());
 }
 
 struct ConvexBaseWrapper {
   typedef Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor> RowMatrixX3;
   typedef Eigen::Map<RowMatrixX3> MapRowMatrixX3;
   typedef Eigen::Ref<RowMatrixX3> RefRowMatrixX3;
+  typedef Eigen::VectorXd VecOfDoubles;
+  typedef Eigen::Map<VecOfDoubles> MapVecOfDoubles;
+  typedef Eigen::Ref<VecOfDoubles> RefVecOfDoubles;
 
   static Vec3f& point(const ConvexBase& convex, unsigned int i) {
     if (i >= convex.num_points)
       throw std::out_of_range("index is out of range");
-    return convex.points[i];
+    return (*(convex.points))[i];
   }
 
   static RefRowMatrixX3 points(const ConvexBase& convex) {
-    return MapRowMatrixX3(convex.points[0].data(), convex.num_points, 3);
+    return MapRowMatrixX3((*(convex.points))[0].data(), convex.num_points, 3);
+  }
+
+  static Vec3f& normal(const ConvexBase& convex, unsigned int i) {
+    if (i >= convex.num_normals_and_offsets)
+      throw std::out_of_range("index is out of range");
+    return (*(convex.normals))[i];
+  }
+
+  static RefRowMatrixX3 normals(const ConvexBase& convex) {
+    return MapRowMatrixX3((*(convex.normals))[0].data(),
+                          convex.num_normals_and_offsets, 3);
+  }
+
+  static double offset(const ConvexBase& convex, unsigned int i) {
+    if (i >= convex.num_normals_and_offsets)
+      throw std::out_of_range("index is out of range");
+    return (*(convex.offsets))[i];
+  }
+
+  static RefVecOfDoubles offsets(const ConvexBase& convex) {
+    return MapVecOfDoubles(convex.offsets->data(),
+                           convex.num_normals_and_offsets, 1);
   }
 
   static list neighbors(const ConvexBase& convex, unsigned int i) {
     if (i >= convex.num_points)
       throw std::out_of_range("index is out of range");
     list n;
-    for (unsigned char j = 0; j < convex.neighbors[i].count(); ++j)
-      n.append(convex.neighbors[i][j]);
+    const std::vector<ConvexBase::Neighbors>& neighbors_ = *(convex.neighbors);
+    for (unsigned char j = 0; j < neighbors_[i].count(); ++j)
+      n.append(neighbors_[i][j]);
     return n;
   }
 
@@ -191,16 +224,21 @@ struct ConvexWrapper {
   static PolygonT polygons(const Convex_t& convex, unsigned int i) {
     if (i >= convex.num_polygons)
       throw std::out_of_range("index is out of range");
-    return convex.polygons[i];
+    return (*convex.polygons)[i];
   }
 
   static shared_ptr<Convex_t> constructor(const Vec3fs& _points,
                                           const Triangles& _tris) {
-    Vec3f* points = new Vec3f[_points.size()];
-    for (std::size_t i = 0; i < _points.size(); ++i) points[i] = _points[i];
-    Triangle* tris = new Triangle[_tris.size()];
-    for (std::size_t i = 0; i < _tris.size(); ++i) tris[i] = _tris[i];
-    return shared_ptr<Convex_t>(new Convex_t(true, points,
+    std::shared_ptr<std::vector<Vec3f>> points(
+        new std::vector<Vec3f>(_points.size()));
+    std::vector<Vec3f>& points_ = *points;
+    for (std::size_t i = 0; i < _points.size(); ++i) points_[i] = _points[i];
+
+    std::shared_ptr<std::vector<Triangle>> tris(
+        new std::vector<Triangle>(_tris.size()));
+    std::vector<Triangle>& tris_ = *tris;
+    for (std::size_t i = 0; i < _tris.size(); ++i) tris_[i] = _tris[i];
+    return shared_ptr<Convex_t>(new Convex_t(points,
                                              (unsigned int)_points.size(), tris,
                                              (unsigned int)_tris.size()));
   }
@@ -222,18 +260,21 @@ void exposeComputeMemoryFootprint() {
   defComputeMemoryFootprint<Halfspace>();
   defComputeMemoryFootprint<TriangleP>();
 
-  defComputeMemoryFootprint<BVHModel<OBB> >();
-  defComputeMemoryFootprint<BVHModel<RSS> >();
-  defComputeMemoryFootprint<BVHModel<OBBRSS> >();
+  defComputeMemoryFootprint<BVHModel<OBB>>();
+  defComputeMemoryFootprint<BVHModel<RSS>>();
+  defComputeMemoryFootprint<BVHModel<OBBRSS>>();
 }
 
 void exposeShapes() {
   class_<ShapeBase, bases<CollisionGeometry>, shared_ptr<ShapeBase>,
          noncopyable>("ShapeBase", doxygen::class_doc<ShapeBase>(), no_init)
       //.def ("getObjectType", &CollisionGeometry::getObjectType)
-      ;
+      .def(dv::member_func("setSweptSphereRadius",
+                           &ShapeBase::setSweptSphereRadius))
+      .def(dv::member_func("getSweptSphereRadius",
+                           &ShapeBase::getSweptSphereRadius));
 
-  class_<Box, bases<ShapeBase>, shared_ptr<Box> >(
+  class_<Box, bases<ShapeBase>, shared_ptr<Box>>(
       "Box", doxygen::class_doc<ShapeBase>(), no_init)
       .def(dv::init<Box>())
       .def(dv::init<Box, const Box&>())
@@ -242,9 +283,10 @@ void exposeShapes() {
       .DEF_RW_CLASS_ATTRIB(Box, halfSide)
       .def("clone", &Box::clone, doxygen::member_func_doc(&Box::clone),
            return_value_policy<manage_new_object>())
-      .def_pickle(PickleObject<Box>());
+      .def_pickle(PickleObject<Box>())
+      .def(SerializableVisitor<Box>());
 
-  class_<Capsule, bases<ShapeBase>, shared_ptr<Capsule> >(
+  class_<Capsule, bases<ShapeBase>, shared_ptr<Capsule>>(
       "Capsule", doxygen::class_doc<Capsule>(), no_init)
       .def(dv::init<Capsule>())
       .def(dv::init<Capsule, FCL_REAL, FCL_REAL>())
@@ -253,9 +295,10 @@ void exposeShapes() {
       .DEF_RW_CLASS_ATTRIB(Capsule, halfLength)
       .def("clone", &Capsule::clone, doxygen::member_func_doc(&Capsule::clone),
            return_value_policy<manage_new_object>())
-      .def_pickle(PickleObject<Capsule>());
+      .def_pickle(PickleObject<Capsule>())
+      .def(SerializableVisitor<Capsule>());
 
-  class_<Cone, bases<ShapeBase>, shared_ptr<Cone> >(
+  class_<Cone, bases<ShapeBase>, shared_ptr<Cone>>(
       "Cone", doxygen::class_doc<Cone>(), no_init)
       .def(dv::init<Cone>())
       .def(dv::init<Cone, FCL_REAL, FCL_REAL>())
@@ -264,45 +307,58 @@ void exposeShapes() {
       .DEF_RW_CLASS_ATTRIB(Cone, halfLength)
       .def("clone", &Cone::clone, doxygen::member_func_doc(&Cone::clone),
            return_value_policy<manage_new_object>())
-      .def_pickle(PickleObject<Cone>());
+      .def_pickle(PickleObject<Cone>())
+      .def(SerializableVisitor<Cone>());
 
   class_<ConvexBase, bases<ShapeBase>, shared_ptr<ConvexBase>, noncopyable>(
       "ConvexBase", doxygen::class_doc<ConvexBase>(), no_init)
       .DEF_RO_CLASS_ATTRIB(ConvexBase, center)
       .DEF_RO_CLASS_ATTRIB(ConvexBase, num_points)
+      .DEF_RO_CLASS_ATTRIB(ConvexBase, num_normals_and_offsets)
       .def("point", &ConvexBaseWrapper::point, bp::args("self", "index"),
            "Retrieve the point given by its index.",
            bp::return_internal_reference<>())
       .def("points", &ConvexBaseWrapper::point, bp::args("self", "index"),
            "Retrieve the point given by its index.",
            ::hpp::fcl::python::deprecated_member<
-               bp::return_internal_reference<> >())
+               bp::return_internal_reference<>>())
       .def("points", &ConvexBaseWrapper::points, bp::args("self"),
            "Retrieve all the points.",
            bp::with_custodian_and_ward_postcall<0, 1>())
       //    .add_property ("points",
       //                   bp::make_function(&ConvexBaseWrapper::points,bp::with_custodian_and_ward_postcall<0,1>()),
       //                   "Points of the convex.")
+      .def("normal", &ConvexBaseWrapper::normal, bp::args("self", "index"),
+           "Retrieve the normal given by its index.",
+           bp::return_internal_reference<>())
+      .def("normals", &ConvexBaseWrapper::normals, bp::args("self"),
+           "Retrieve all the normals.",
+           bp::with_custodian_and_ward_postcall<0, 1>())
+      .def("offset", &ConvexBaseWrapper::offset, bp::args("self", "index"),
+           "Retrieve the offset given by its index.")
+      .def("offsets", &ConvexBaseWrapper::offsets, bp::args("self"),
+           "Retrieve all the offsets.",
+           bp::with_custodian_and_ward_postcall<0, 1>())
       .def("neighbors", &ConvexBaseWrapper::neighbors)
       .def("convexHull", &ConvexBaseWrapper::convexHull,
-           doxygen::member_func_doc(&ConvexBase::convexHull),
+           // doxygen::member_func_doc(&ConvexBase::convexHull),
            return_value_policy<manage_new_object>())
       .staticmethod("convexHull")
       .def("clone", &ConvexBase::clone,
            doxygen::member_func_doc(&ConvexBase::clone),
            return_value_policy<manage_new_object>());
 
-  class_<Convex<Triangle>, bases<ConvexBase>, shared_ptr<Convex<Triangle> >,
-         noncopyable>("Convex", doxygen::class_doc<Convex<Triangle> >(),
-                      no_init)
+  class_<Convex<Triangle>, bases<ConvexBase>, shared_ptr<Convex<Triangle>>,
+         noncopyable>("Convex", doxygen::class_doc<Convex<Triangle>>(), no_init)
       .def("__init__", make_constructor(&ConvexWrapper<Triangle>::constructor))
-      .def(dv::init<Convex<Triangle> >())
+      .def(dv::init<Convex<Triangle>>())
       .def(dv::init<Convex<Triangle>, const Convex<Triangle>&>())
       .DEF_RO_CLASS_ATTRIB(Convex<Triangle>, num_polygons)
       .def("polygons", &ConvexWrapper<Triangle>::polygons)
-      .def_pickle(PickleObject<Convex<Triangle> >());
+      .def_pickle(PickleObject<Convex<Triangle>>())
+      .def(SerializableVisitor<Convex<Triangle>>());
 
-  class_<Cylinder, bases<ShapeBase>, shared_ptr<Cylinder> >(
+  class_<Cylinder, bases<ShapeBase>, shared_ptr<Cylinder>>(
       "Cylinder", doxygen::class_doc<Cylinder>(), no_init)
       .def(dv::init<Cylinder>())
       .def(dv::init<Cylinder, FCL_REAL, FCL_REAL>())
@@ -312,9 +368,10 @@ void exposeShapes() {
       .def("clone", &Cylinder::clone,
            doxygen::member_func_doc(&Cylinder::clone),
            return_value_policy<manage_new_object>())
-      .def_pickle(PickleObject<Cylinder>());
+      .def_pickle(PickleObject<Cylinder>())
+      .def(SerializableVisitor<Cylinder>());
 
-  class_<Halfspace, bases<ShapeBase>, shared_ptr<Halfspace> >(
+  class_<Halfspace, bases<ShapeBase>, shared_ptr<Halfspace>>(
       "Halfspace", doxygen::class_doc<Halfspace>(), no_init)
       .def(dv::init<Halfspace, const Vec3f&, FCL_REAL>())
       .def(dv::init<Halfspace, const Halfspace&>())
@@ -325,9 +382,10 @@ void exposeShapes() {
       .def("clone", &Halfspace::clone,
            doxygen::member_func_doc(&Halfspace::clone),
            return_value_policy<manage_new_object>())
-      .def_pickle(PickleObject<Halfspace>());
+      .def_pickle(PickleObject<Halfspace>())
+      .def(SerializableVisitor<Halfspace>());
 
-  class_<Plane, bases<ShapeBase>, shared_ptr<Plane> >(
+  class_<Plane, bases<ShapeBase>, shared_ptr<Plane>>(
       "Plane", doxygen::class_doc<Plane>(), no_init)
       .def(dv::init<Plane, const Vec3f&, FCL_REAL>())
       .def(dv::init<Plane, const Plane&>())
@@ -337,9 +395,10 @@ void exposeShapes() {
       .DEF_RW_CLASS_ATTRIB(Plane, d)
       .def("clone", &Plane::clone, doxygen::member_func_doc(&Plane::clone),
            return_value_policy<manage_new_object>())
-      .def_pickle(PickleObject<Plane>());
+      .def_pickle(PickleObject<Plane>())
+      .def(SerializableVisitor<Plane>());
 
-  class_<Sphere, bases<ShapeBase>, shared_ptr<Sphere> >(
+  class_<Sphere, bases<ShapeBase>, shared_ptr<Sphere>>(
       "Sphere", doxygen::class_doc<Sphere>(), no_init)
       .def(dv::init<Sphere>())
       .def(dv::init<Sphere, const Sphere&>())
@@ -347,9 +406,10 @@ void exposeShapes() {
       .DEF_RW_CLASS_ATTRIB(Sphere, radius)
       .def("clone", &Sphere::clone, doxygen::member_func_doc(&Sphere::clone),
            return_value_policy<manage_new_object>())
-      .def_pickle(PickleObject<Sphere>());
+      .def_pickle(PickleObject<Sphere>())
+      .def(SerializableVisitor<Sphere>());
 
-  class_<Ellipsoid, bases<ShapeBase>, shared_ptr<Ellipsoid> >(
+  class_<Ellipsoid, bases<ShapeBase>, shared_ptr<Ellipsoid>>(
       "Ellipsoid", doxygen::class_doc<Ellipsoid>(), no_init)
       .def(dv::init<Ellipsoid>())
       .def(dv::init<Ellipsoid, FCL_REAL, FCL_REAL, FCL_REAL>())
@@ -359,9 +419,10 @@ void exposeShapes() {
       .def("clone", &Ellipsoid::clone,
            doxygen::member_func_doc(&Ellipsoid::clone),
            return_value_policy<manage_new_object>())
-      .def_pickle(PickleObject<Ellipsoid>());
+      .def_pickle(PickleObject<Ellipsoid>())
+      .def(SerializableVisitor<Ellipsoid>());
 
-  class_<TriangleP, bases<ShapeBase>, shared_ptr<TriangleP> >(
+  class_<TriangleP, bases<ShapeBase>, shared_ptr<TriangleP>>(
       "TriangleP", doxygen::class_doc<TriangleP>(), no_init)
       .def(dv::init<TriangleP>())
       .def(dv::init<TriangleP, const Vec3f&, const Vec3f&, const Vec3f&>())
@@ -372,7 +433,8 @@ void exposeShapes() {
       .def("clone", &TriangleP::clone,
            doxygen::member_func_doc(&TriangleP::clone),
            return_value_policy<manage_new_object>())
-      .def_pickle(PickleObject<TriangleP>());
+      .def_pickle(PickleObject<TriangleP>())
+      .def(SerializableVisitor<TriangleP>());
 }
 
 boost::python::tuple AABB_distance_proxy(const AABB& self, const AABB& other) {
@@ -521,7 +583,8 @@ void exposeCollisionGeometries() {
            //         doxygen::member_func_args(static_cast<AABB&
            //         (AABB::*)(const Vec3f &)>(&AABB::expand)),
            bp::return_internal_reference<>())
-      .def_pickle(PickleObject<AABB>());
+      .def_pickle(PickleObject<AABB>())
+      .def(SerializableVisitor<AABB>());
 
   def("translate", (AABB(*)(const AABB&, const Vec3f&)) & translate,
       bp::args("aabb", "t"), "Translate the center of AABB by t");
@@ -582,7 +645,7 @@ void exposeCollisionGeometries() {
       .def("vertices", &BVHModelBaseWrapper::vertex, bp::args("self", "index"),
            "Retrieve the vertex given by its index.",
            ::hpp::fcl::python::deprecated_member<
-               bp::return_internal_reference<> >())
+               bp::return_internal_reference<>>())
       .def("vertices", &BVHModelBaseWrapper::vertices, bp::args("self"),
            "Retrieve all the vertices.",
            bp::with_custodian_and_ward_postcall<0, 1>())
@@ -634,11 +697,11 @@ void exposeCollisionObject() {
   if (!eigenpy::register_symbolic_link_to_registered_type<CollisionObject>()) {
     class_<CollisionObject, CollisionObjectPtr_t>("CollisionObject", no_init)
         .def(dv::init<CollisionObject, const CollisionGeometryPtr_t&,
-                      bp::optional<bool> >())
+                      bp::optional<bool>>())
         .def(dv::init<CollisionObject, const CollisionGeometryPtr_t&,
-                      const Transform3f&, bp::optional<bool> >())
+                      const Transform3f&, bp::optional<bool>>())
         .def(dv::init<CollisionObject, const CollisionGeometryPtr_t&,
-                      const Matrix3f&, const Vec3f&, bp::optional<bool> >())
+                      const Matrix3f&, const Vec3f&, bp::optional<bool>>())
 
         .DEF_CLASS_FUNC(CollisionObject, getObjectType)
         .DEF_CLASS_FUNC(CollisionObject, getNodeType)

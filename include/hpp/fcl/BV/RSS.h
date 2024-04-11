@@ -38,7 +38,8 @@
 #ifndef HPP_FCL_RSS_H
 #define HPP_FCL_RSS_H
 
-#include <hpp/fcl/data_types.h>
+#include "hpp/fcl/data_types.h"
+
 #include <boost/math/constants/constants.hpp>
 
 namespace hpp {
@@ -51,6 +52,8 @@ struct CollisionRequest;
 
 /// @brief A class for rectangle sphere-swept bounding volume
 struct HPP_FCL_DLLAPI RSS {
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
   /// @brief Orientation of RSS. axis[i] is the ith column of the orientation
   /// matrix for the RSS; it is also the i-th principle direction of the RSS. We
   /// assume that axis[0] corresponds to the axis with the longest length,
