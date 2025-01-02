@@ -15,7 +15,7 @@ env:
 
 jobs:
   wheel:
-    name: "Wheel ${{ matrix.python }} ${{ matrix.os }} ${{ matrix.arch }}"
+    name: "Wheel ${{ matrix.python }} ${{ matrix.os }} ${{ matrix.arch }} ${{ matrix.tests }}"
     runs-on: "${{ matrix.os }}-latest"
     strategy:
       matrix:
@@ -34,6 +34,8 @@ jobs:
             arch: "arm64"
           - arch: "aarch64"
             tests: "ON"
+          - arch: "arm64"
+            tests: "OFF"
           - arch: "x86_64"
             tests: "OFF"
 
