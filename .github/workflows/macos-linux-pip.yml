@@ -3,8 +3,8 @@ name: Build Coal for Mac OS X/Linux via pip
 on: [push, pull_request]
 
 env:
-  CTEST_OUTPUT_ON_FAILURE: 1
-  CTEST_PARALLEL_LEVEL: 4
+    CTEST_OUTPUT_ON_FAILURE: 1
+    CTEST_PARALLEL_LEVEL: 4
 
 jobs:
   coal-pip:
