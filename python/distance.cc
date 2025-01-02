@@ -34,42 +34,84 @@
 
 #include <eigenpy/eigenpy.hpp>
 
-#include "fcl.hh"
+#include "coal.hh"
 
-#include <hpp/fcl/fwd.hh>
-#include <hpp/fcl/distance.h>
+COAL_COMPILER_DIAGNOSTIC_PUSH
+COAL_COMPILER_DIAGNOSTIC_IGNORED_DEPRECECATED_DECLARATIONS
+#include "coal/fwd.hh"
+#include "coal/distance.h"
+#include "coal/serialization/collision_data.h"
 
-#ifdef HPP_FCL_HAS_DOXYGEN_AUTODOC
+#include "deprecation.hh"
+COAL_COMPILER_DIAGNOSTIC_POP
+
+#include "serializable.hh"
+
+#ifdef COAL_HAS_DOXYGEN_AUTODOC
 #include "doxygen_autodoc/functions.h"
-#include "doxygen_autodoc/hpp/fcl/collision_data.h"
+#include "doxygen_autodoc/coal/collision_data.h"
 #endif
 
 using namespace boost::python;
-using namespace hpp::fcl;
+using namespace coal;
+using namespace coal::python;
 
 namespace dv = doxygen::visitor;
 
-struct DistanceRequestWrapper {
-  static Vec3f getNearestPoint1(const DistanceResult& res) {
+struct DistanceResultWrapper {
+  static Vec3s getNearestPoint1(const DistanceResult& res) {
     return res.nearest_points[0];
   }
-  static Vec3f getNearestPoint2(const DistanceResult& res) {
+  static Vec3s getNearestPoint2(const DistanceResult& res) {
     return res.nearest_points[1];
   }
 };
 
 void exposeDistanceAPI() {
+  COAL_COMPILER_DIAGNOSTIC_PUSH
+  COAL_COMPILER_DIAGNOSTIC_IGNORED_DEPRECECATED_DECLARATIONS
   if (!eigenpy::register_symbolic_link_to_registered_type<DistanceRequest>()) {
     class_<DistanceRequest, bases<QueryRequest> >(
         "DistanceRequest", doxygen::class_doc<DistanceRequest>(),
-        init<optional<bool, FCL_REAL, FCL_REAL> >(
+        init<optional<bool, CoalScalar, CoalScalar> >(
             (arg("self"), arg("enable_nearest_points"), arg("rel_err"),
              arg("abs_err")),
             "Constructor"))
-        .DEF_RW_CLASS_ATTRIB(DistanceRequest, enable_nearest_points)
+        .add_property(
+            "enable_nearest_points",
+            bp::make_function(
+                +[](DistanceRequest& self) -> bool {
+                  return self.enable_nearest_points;
+                },
+                deprecated_warning_policy<>(
+                    "enable_nearest_points has been marked as deprecated. "
+                    "Nearest points are always computed when computing "
+                    "distance. They are the points of the shapes that achieve "
+                    "a distance of "
+                    "DistanceResult::min_distance.\n"
+                    "Use `enable_signed_distance` if you want to compute a "
+                    "signed minimum "
+                    "distance (and thus its corresponding nearest points).")),
+            bp::make_function(
+                +[](DistanceRequest& self, const bool value) -> void {
+                  self.enable_nearest_points = value;
+                },
+                deprecated_warning_policy<>(
+                    "enable_nearest_points has been marked as deprecated. "
+                    "Nearest points are always computed when computing "
+                    "distance. They are the points of the shapes that achieve "
+                    "a distance of "
+                    "DistanceResult::min_distance.\n"
+                    "Use `enable_signed_distance` if you want to compute a "
+                    "signed minimum "
+                    "distance (and thus its corresponding nearest points).")),
+            doxygen::class_attrib_doc<DistanceRequest>("enable_nearest_points"))
+        .DEF_RW_CLASS_ATTRIB(DistanceRequest, enable_signed_distance)
         .DEF_RW_CLASS_ATTRIB(DistanceRequest, rel_err)
-        .DEF_RW_CLASS_ATTRIB(DistanceRequest, abs_err);
+        .DEF_RW_CLASS_ATTRIB(DistanceRequest, abs_err)
+        .def(SerializableVisitor<DistanceRequest>());
   }
+  COAL_COMPILER_DIAGNOSTIC_POP
 
   if (!eigenpy::register_symbolic_link_to_registered_type<
           std::vector<DistanceRequest> >()) {
@@ -84,17 +126,19 @@ void exposeDistanceAPI() {
         .DEF_RW_CLASS_ATTRIB(DistanceResult, min_distance)
         .DEF_RW_CLASS_ATTRIB(DistanceResult, normal)
         //.def_readwrite ("nearest_points", &DistanceResult::nearest_points)
-        .def("getNearestPoint1", &DistanceRequestWrapper::getNearestPoint1,
+        .def("getNearestPoint1", &DistanceResultWrapper::getNearestPoint1,
              doxygen::class_attrib_doc<DistanceResult>("nearest_points"))
-        .def("getNearestPoint2", &DistanceRequestWrapper::getNearestPoint2,
+        .def("getNearestPoint2", &DistanceResultWrapper::getNearestPoint2,
              doxygen::class_attrib_doc<DistanceResult>("nearest_points"))
+        .DEF_RO_CLASS_ATTRIB(DistanceResult, nearest_points)
         .DEF_RO_CLASS_ATTRIB(DistanceResult, o1)
         .DEF_RO_CLASS_ATTRIB(DistanceResult, o2)
         .DEF_RW_CLASS_ATTRIB(DistanceResult, b1)
         .DEF_RW_CLASS_ATTRIB(DistanceResult, b2)
 
         .def("clear", &DistanceResult::clear,
-             doxygen::member_func_doc(&DistanceResult::clear));
+             doxygen::member_func_doc(&DistanceResult::clear))
+        .def(SerializableVisitor<DistanceResult>());
   }
 
   if (!eigenpy::register_symbolic_link_to_registered_type<
@@ -105,21 +149,22 @@ void exposeDistanceAPI() {
 
   doxygen::def(
       "distance",
-      static_cast<FCL_REAL (*)(const CollisionObject*, const CollisionObject*,
-                               const DistanceRequest&, DistanceResult&)>(
+      static_cast<CoalScalar (*)(const CollisionObject*, const CollisionObject*,
+                                 const DistanceRequest&, DistanceResult&)>(
           &distance));
   doxygen::def(
       "distance",
-      static_cast<FCL_REAL (*)(const CollisionGeometry*, const Transform3f&,
-                               const CollisionGeometry*, const Transform3f&,
-                               DistanceRequest&, DistanceResult&)>(&distance));
+      static_cast<CoalScalar (*)(const CollisionGeometry*, const Transform3s&,
+                                 const CollisionGeometry*, const Transform3s&,
+                                 const DistanceRequest&, DistanceResult&)>(
+          &distance));
 
   class_<ComputeDistance>("ComputeDistance",
                           doxygen::class_doc<ComputeDistance>(), no_init)
       .def(dv::init<ComputeDistance, const CollisionGeometry*,
                     const CollisionGeometry*>())
       .def("__call__",
-           static_cast<FCL_REAL (ComputeDistance::*)(
-               const Transform3f&, const Transform3f&, DistanceRequest&,
+           static_cast<CoalScalar (ComputeDistance::*)(
+               const Transform3s&, const Transform3s&, const DistanceRequest&,
                DistanceResult&) const>(&ComputeDistance::operator()));
 }

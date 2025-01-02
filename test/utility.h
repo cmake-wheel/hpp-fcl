@@ -35,17 +35,17 @@
 
 /** \author Jia Pan */
 
-#ifndef TEST_HPP_FCL_UTILITY_H
-#define TEST_HPP_FCL_UTILITY_H
+#ifndef TEST_COAL_UTILITY_H
+#define TEST_COAL_UTILITY_H
 
-#include <hpp/fcl/math/transform.h>
-#include <hpp/fcl/collision_data.h>
-#include <hpp/fcl/collision_object.h>
-#include <hpp/fcl/broadphase/default_broadphase_callbacks.h>
-#include <hpp/fcl/shape/convex.h>
+#include "coal/math/transform.h"
+#include "coal/collision_data.h"
+#include "coal/collision_object.h"
+#include "coal/broadphase/default_broadphase_callbacks.h"
+#include "coal/shape/convex.h"
 
-#ifdef HPP_FCL_HAS_OCTOMAP
-#include <hpp/fcl/octree.h>
+#ifdef COAL_HAS_OCTOMAP
+#include "coal/octree.h"
 #endif
 
 #ifdef _WIN32
@@ -56,28 +56,33 @@
 #include <sys/time.h>
 #endif
 
-#define EIGEN_VECTOR_IS_APPROX(Va, Vb, precision)         \
-  BOOST_CHECK_MESSAGE(((Va) - (Vb)).isZero(precision),    \
-                      "check " #Va ".isApprox(" #Vb       \
-                      ") failed "                         \
-                      "[\n"                               \
-                          << (Va).transpose() << "\n!=\n" \
+#define EIGEN_VECTOR_IS_APPROX(Va, Vb, precision)                            \
+  BOOST_CHECK_MESSAGE(((Va) - (Vb)).isZero(precision),                       \
+                      "check " #Va ".isApprox(" #Vb ") failed at precision " \
+                          << precision << " [\n"                             \
+                          << (Va).transpose() << "\n!=\n"                    \
                           << (Vb).transpose() << "\n]")
-#define EIGEN_MATRIX_IS_APPROX(Va, Vb, precision)                              \
-  BOOST_CHECK_MESSAGE(((Va) - (Vb)).isZero(precision), "check " #Va            \
-                                                       ".isApprox(" #Vb        \
-                                                       ") failed "             \
-                                                       "[\n"                   \
-                                                           << (Va) << "\n!=\n" \
-                                                           << (Vb) << "\n]")
+
+#define EIGEN_MATRIX_IS_APPROX(Va, Vb, precision)                            \
+  BOOST_CHECK_MESSAGE(((Va) - (Vb)).isZero(precision),                       \
+                      "check " #Va ".isApprox(" #Vb ") failed at precision " \
+                          << precision << " [\n"                             \
+                          << (Va) << "\n!=\n"                                \
+                          << (Vb) << "\n]")
+
+#define CoalScalar_IS_APPROX(Va, Vb, precision)                              \
+  BOOST_CHECK_MESSAGE(std::abs((Va) - (Vb)) < precision,                     \
+                      "check " #Va ".isApprox(" #Vb ") failed at precision " \
+                          << precision << " [\n"                             \
+                          << Va << "\n!=\n"                                  \
+                          << Vb << "\n]")
 
 namespace octomap {
-#ifdef HPP_FCL_HAS_OCTOMAP
-typedef hpp::fcl::shared_ptr<octomap::OcTree> OcTreePtr_t;
+#ifdef COAL_HAS_OCTOMAP
+typedef coal::shared_ptr<octomap::OcTree> OcTreePtr_t;
 #endif
 }  // namespace octomap
-namespace hpp {
-namespace fcl {
+namespace coal {
 
 class BenchTimer {
  public:
@@ -120,50 +125,50 @@ struct TStruct {
 
 extern const Eigen::IOFormat vfmt;
 extern const Eigen::IOFormat pyfmt;
-typedef Eigen::AngleAxis<FCL_REAL> AngleAxis;
-extern const Vec3f UnitX;
-extern const Vec3f UnitY;
-extern const Vec3f UnitZ;
+typedef Eigen::AngleAxis<CoalScalar> AngleAxis;
+extern const Vec3s UnitX;
+extern const Vec3s UnitY;
+extern const Vec3s UnitZ;
 
 /// @brief Load an obj mesh file
-void loadOBJFile(const char* filename, std::vector<Vec3f>& points,
+void loadOBJFile(const char* filename, std::vector<Vec3s>& points,
                  std::vector<Triangle>& triangles);
 
-void saveOBJFile(const char* filename, std::vector<Vec3f>& points,
+void saveOBJFile(const char* filename, std::vector<Vec3s>& points,
                  std::vector<Triangle>& triangles);
 
-#ifdef HPP_FCL_HAS_OCTOMAP
-fcl::OcTree loadOctreeFile(const std::string& filename,
-                           const FCL_REAL& resolution);
+#ifdef COAL_HAS_OCTOMAP
+coal::OcTree loadOctreeFile(const std::string& filename,
+                            const CoalScalar& resolution);
 #endif
 
 /// @brief Generate one random transform whose translation is constrained by
 /// extents and rotation without constraints. The translation is (x, y, z), and
 /// extents[0] <= x <= extents[3], extents[1] <= y <= extents[4], extents[2] <=
 /// z <= extents[5]
-void generateRandomTransform(FCL_REAL extents[6], Transform3f& transform);
+void generateRandomTransform(CoalScalar extents[6], Transform3s& transform);
 
 /// @brief Generate n random transforms whose translations are constrained by
 /// extents.
-void generateRandomTransforms(FCL_REAL extents[6],
-                              std::vector<Transform3f>& transforms,
+void generateRandomTransforms(CoalScalar extents[6],
+                              std::vector<Transform3s>& transforms,
                               std::size_t n);
 
 /// @brief Generate n random transforms whose translations are constrained by
 /// extents. Also generate another transforms2 which have additional random
 /// translation & rotation to the transforms generated.
-void generateRandomTransforms(FCL_REAL extents[6], FCL_REAL delta_trans[3],
-                              FCL_REAL delta_rot,
-                              std::vector<Transform3f>& transforms,
-                              std::vector<Transform3f>& transforms2,
+void generateRandomTransforms(CoalScalar extents[6], CoalScalar delta_trans[3],
+                              CoalScalar delta_rot,
+                              std::vector<Transform3s>& transforms,
+                              std::vector<Transform3s>& transforms2,
                               std::size_t n);
 
 /// @ brief Structure for minimum distance between two meshes and the
 /// corresponding nearest point pair
 struct DistanceRes {
   double distance;
-  Vec3f p1;
-  Vec3f p2;
+  Vec3s p1;
+  Vec3s p2;
 };
 
 /// @brief Default collision callback for two objects o1 and o2 in broad phase.
@@ -175,23 +180,28 @@ bool defaultCollisionFunction(CollisionObject* o1, CollisionObject* o2,
 /// return value means whether the broad phase can stop now. also return dist,
 /// i.e. the bmin distance till now
 bool defaultDistanceFunction(CollisionObject* o1, CollisionObject* o2,
-                             void* cdata, FCL_REAL& dist);
+                             void* cdata, CoalScalar& dist);
 
 std::string getNodeTypeName(NODE_TYPE node_type);
 
-Quaternion3f makeQuat(FCL_REAL w, FCL_REAL x, FCL_REAL y, FCL_REAL z);
+Quatf makeQuat(CoalScalar w, CoalScalar x, CoalScalar y, CoalScalar z);
 
-std::ostream& operator<<(std::ostream& os, const Transform3f& tf);
+std::ostream& operator<<(std::ostream& os, const Transform3s& tf);
 
 /// Get the argument --nb-run from argv
 std::size_t getNbRun(const int& argc, char const* const* argv,
                      std::size_t defaultValue);
 
 void generateEnvironments(std::vector<CollisionObject*>& env,
-                          FCL_REAL env_scale, std::size_t n);
+                          CoalScalar env_scale, std::size_t n);
 
 void generateEnvironmentsMesh(std::vector<CollisionObject*>& env,
-                              FCL_REAL env_scale, std::size_t n);
+                              CoalScalar env_scale, std::size_t n);
+
+/// @brief Constructs a box with halfsides (l, w, d), centered around 0.
+/// The box is 2*l wide on the x-axis, 2*w wide on the y-axis and 2*d wide on
+/// the z-axis.
+Convex<Quadrilateral> buildBox(CoalScalar l, CoalScalar w, CoalScalar d);
 
 /// @brief We give an ellipsoid as input. The output is a 20 faces polytope
 /// which vertices belong to the original ellipsoid surface. The procedure is
@@ -200,8 +210,29 @@ void generateEnvironmentsMesh(std::vector<CollisionObject*>& env,
 /// ellipsoid tranformation to each vertex of the icosahedron.
 Convex<Triangle> constructPolytopeFromEllipsoid(const Ellipsoid& ellipsoid);
 
-}  // namespace fcl
+Box makeRandomBox(CoalScalar min_size, CoalScalar max_size);
 
-}  // namespace hpp
+Sphere makeRandomSphere(CoalScalar min_size, CoalScalar max_size);
+
+Ellipsoid makeRandomEllipsoid(CoalScalar min_size, CoalScalar max_size);
+
+Capsule makeRandomCapsule(std::array<CoalScalar, 2> min_size,
+                          std::array<CoalScalar, 2> max_size);
+
+Cone makeRandomCone(std::array<CoalScalar, 2> min_size,
+                    std::array<CoalScalar, 2> max_size);
+
+Cylinder makeRandomCylinder(std::array<CoalScalar, 2> min_size,
+                            std::array<CoalScalar, 2> max_size);
+
+Convex<Triangle> makeRandomConvex(CoalScalar min_size, CoalScalar max_size);
+
+Plane makeRandomPlane(CoalScalar min_size, CoalScalar max_size);
+
+Halfspace makeRandomHalfspace(CoalScalar min_size, CoalScalar max_size);
+
+std::shared_ptr<ShapeBase> makeRandomGeometry(NODE_TYPE node_type);
+
+}  // namespace coal
 
 #endif

@@ -3,6 +3,7 @@
  *
  *  Copyright (c) 2011-2014, Willow Garage, Inc.
  *  Copyright (c) 2014-2015, Open Source Robotics Foundation
+ *  Copyright (c) 2024, INRIA
  *  All rights reserved.
  *
  *  Redistribution and use in source and binary forms, with or without
@@ -35,10 +36,9 @@
 
 /** \author Jia Pan */
 
-#include <hpp/fcl/collision_data.h>
+#include "coal/collision_data.h"
 
-namespace hpp {
-namespace fcl {
+namespace coal {
 
 bool CollisionRequest::isSatisfied(const CollisionResult& result) const {
   return result.isCollision() && (num_max_contacts <= result.numContacts());
@@ -48,6 +48,4 @@ bool DistanceRequest::isSatisfied(const DistanceResult& result) const {
   return (result.min_distance <= 0);
 }
 
-}  // namespace fcl
-
-}  // namespace hpp
+}  // namespace coal

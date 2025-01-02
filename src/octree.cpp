@@ -1,7 +1,7 @@
 /*
  * Software License Agreement (BSD License)
  *
- *  Copyright (c) 2020, INRIA
+ *  Copyright (c) 2020-2023, INRIA
  *  All rights reserved.
  *
  *  Redistribution and use in source and binary forms, with or without
@@ -32,10 +32,11 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <hpp/fcl/octree.h>
+#include "coal/octree.h"
 
-namespace hpp {
-namespace fcl {
+#include <array>
+
+namespace coal {
 namespace internal {
 struct Neighbors {
   char value;
@@ -54,29 +55,29 @@ struct Neighbors {
   void hasNeighboordPlusZ() { value |= 0x20; }
 };  // struct neighbors
 
-void computeNeighbors(const std::vector<boost::array<FCL_REAL, 6> >& boxes,
+void computeNeighbors(const std::vector<Vec6s>& boxes,
                       std::vector<Neighbors>& neighbors) {
-  typedef std::vector<boost::array<FCL_REAL, 6> > VectorArray6;
-  FCL_REAL fixedSize = -1;
-  FCL_REAL e(1e-8);
+  typedef std::vector<Vec6s> VectorVec6s;
+  CoalScalar fixedSize = -1;
+  CoalScalar e(1e-8);
   for (std::size_t i = 0; i < boxes.size(); ++i) {
-    const boost::array<FCL_REAL, 6>& box(boxes[i]);
+    const Vec6s& box(boxes[i]);
     Neighbors& n(neighbors[i]);
-    FCL_REAL x(box[0]);
-    FCL_REAL y(box[1]);
-    FCL_REAL z(box[2]);
-    FCL_REAL s(box[3]);
+    CoalScalar x(box[0]);
+    CoalScalar y(box[1]);
+    CoalScalar z(box[2]);
+    CoalScalar s(box[3]);
     if (fixedSize == -1)
       fixedSize = s;
     else
       assert(s == fixedSize);
 
-    for (VectorArray6::const_iterator it = boxes.begin(); it != boxes.end();
+    for (VectorVec6s::const_iterator it = boxes.begin(); it != boxes.end();
          ++it) {
-      const boost::array<FCL_REAL, 6>& otherBox = *it;
-      FCL_REAL xo(otherBox[0]);
-      FCL_REAL yo(otherBox[1]);
-      FCL_REAL zo(otherBox[2]);
+      const Vec6s& otherBox = *it;
+      CoalScalar xo(otherBox[0]);
+      CoalScalar yo(otherBox[1]);
+      CoalScalar zo(otherBox[2]);
       // if (fabs(x-xo) < e && fabs(y-yo) < e && fabs(z-zo) < e){
       //   continue;
       // }
@@ -105,35 +106,35 @@ void computeNeighbors(const std::vector<boost::array<FCL_REAL, 6> >& boxes,
 }  // namespace internal
 
 void OcTree::exportAsObjFile(const std::string& filename) const {
-  std::vector<boost::array<FCL_REAL, 6> > boxes(this->toBoxes());
+  std::vector<Vec6s> boxes(this->toBoxes());
   std::vector<internal::Neighbors> neighbors(boxes.size());
   internal::computeNeighbors(boxes, neighbors);
   // compute list of vertices and faces
 
-  typedef std::vector<Vec3f> VectorVec3f;
-  std::vector<Vec3f> vertices;
+  typedef std::vector<Vec3s> VectorVec3s;
+  std::vector<Vec3s> vertices;
 
-  typedef boost::array<std::size_t, 4> Array4;
+  typedef std::array<std::size_t, 4> Array4;
   typedef std::vector<Array4> VectorArray4;
   std::vector<Array4> faces;
 
   for (std::size_t i = 0; i < boxes.size(); ++i) {
-    const boost::array<FCL_REAL, 6>& box(boxes[i]);
+    const Vec6s& box(boxes[i]);
     internal::Neighbors& n(neighbors[i]);
 
-    FCL_REAL x(box[0]);
-    FCL_REAL y(box[1]);
-    FCL_REAL z(box[2]);
-    FCL_REAL size(box[3]);
+    CoalScalar x(box[0]);
+    CoalScalar y(box[1]);
+    CoalScalar z(box[2]);
+    CoalScalar size(box[3]);
 
-    vertices.push_back(Vec3f(x - .5 * size, y - .5 * size, z - .5 * size));
-    vertices.push_back(Vec3f(x + .5 * size, y - .5 * size, z - .5 * size));
-    vertices.push_back(Vec3f(x - .5 * size, y + .5 * size, z - .5 * size));
-    vertices.push_back(Vec3f(x + .5 * size, y + .5 * size, z - .5 * size));
-    vertices.push_back(Vec3f(x - .5 * size, y - .5 * size, z + .5 * size));
-    vertices.push_back(Vec3f(x + .5 * size, y - .5 * size, z + .5 * size));
-    vertices.push_back(Vec3f(x - .5 * size, y + .5 * size, z + .5 * size));
-    vertices.push_back(Vec3f(x + .5 * size, y + .5 * size, z + .5 * size));
+    vertices.push_back(Vec3s(x - .5 * size, y - .5 * size, z - .5 * size));
+    vertices.push_back(Vec3s(x + .5 * size, y - .5 * size, z - .5 * size));
+    vertices.push_back(Vec3s(x - .5 * size, y + .5 * size, z - .5 * size));
+    vertices.push_back(Vec3s(x + .5 * size, y + .5 * size, z - .5 * size));
+    vertices.push_back(Vec3s(x - .5 * size, y - .5 * size, z + .5 * size));
+    vertices.push_back(Vec3s(x + .5 * size, y - .5 * size, z + .5 * size));
+    vertices.push_back(Vec3s(x - .5 * size, y + .5 * size, z + .5 * size));
+    vertices.push_back(Vec3s(x + .5 * size, y + .5 * size, z + .5 * size));
 
     // Add face only if box has no neighbor with the same face
     if (!n.minusX()) {
@@ -165,13 +166,15 @@ void OcTree::exportAsObjFile(const std::string& filename) const {
   std::ofstream os;
   os.open(filename);
   if (!os.is_open())
-    throw std::runtime_error(std::string("failed to open file \"") + filename +
-                             std::string("\""));
+    COAL_THROW_PRETTY(
+        (std::string("failed to open file \"") + filename + std::string("\""))
+            .c_str(),
+        std::runtime_error);
   // write vertices
   os << "# list of vertices\n";
-  for (VectorVec3f::const_iterator it = vertices.begin(); it != vertices.end();
+  for (VectorVec3s::const_iterator it = vertices.begin(); it != vertices.end();
        ++it) {
-    const Vec3f& v = *it;
+    const Vec3s& v = *it;
     os << "v " << v[0] << " " << v[1] << " " << v[2] << '\n';
   }
   os << "\n# list of faces\n";
@@ -183,21 +186,18 @@ void OcTree::exportAsObjFile(const std::string& filename) const {
 }
 
 OcTreePtr_t makeOctree(
-    const Eigen::Matrix<FCL_REAL, Eigen::Dynamic, 3>& point_cloud,
-    const FCL_REAL resolution) {
-  typedef Eigen::Matrix<FCL_REAL, Eigen::Dynamic, 3> InputType;
+    const Eigen::Matrix<CoalScalar, Eigen::Dynamic, 3>& point_cloud,
+    const CoalScalar resolution) {
+  typedef Eigen::Matrix<CoalScalar, Eigen::Dynamic, 3> InputType;
   typedef InputType::ConstRowXpr RowType;
 
   shared_ptr<octomap::OcTree> octree(new octomap::OcTree(resolution));
   for (Eigen::DenseIndex row_id = 0; row_id < point_cloud.rows(); ++row_id) {
     RowType row = point_cloud.row(row_id);
-    octomap::point3d p(static_cast<float>(row[0]), static_cast<float>(row[1]),
-                       static_cast<float>(row[2]));
-    octree->updateNode(p, true);
+    octree->updateNode(row[0], row[1], row[2], true, true);
   }
   octree->updateInnerOccupancy();
 
   return OcTreePtr_t(new OcTree(octree));
 }
-}  // namespace fcl
-}  // namespace hpp
+}  // namespace coal

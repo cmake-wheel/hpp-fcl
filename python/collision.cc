@@ -34,23 +34,28 @@
 
 #include <eigenpy/eigenpy.hpp>
 
-#include <hpp/fcl/fwd.hh>
-#include <hpp/fcl/collision.h>
+#include "coal/fwd.hh"
+COAL_COMPILER_DIAGNOSTIC_PUSH
+COAL_COMPILER_DIAGNOSTIC_IGNORED_DEPRECECATED_DECLARATIONS
+#include "coal/collision.h"
+#include "coal/serialization/collision_data.h"
+COAL_COMPILER_DIAGNOSTIC_POP
 
-#include "fcl.hh"
+#include "coal.hh"
 #include "deprecation.hh"
+#include "serializable.hh"
 
-#ifdef HPP_FCL_HAS_DOXYGEN_AUTODOC
+#ifdef COAL_HAS_DOXYGEN_AUTODOC
 #include "doxygen_autodoc/functions.h"
-#include "doxygen_autodoc/hpp/fcl/collision_data.h"
+#include "doxygen_autodoc/coal/collision_data.h"
 #endif
 
 #include "../doc/python/doxygen.hh"
 #include "../doc/python/doxygen-boost.hh"
 
 using namespace boost::python;
-using namespace hpp::fcl;
-using namespace hpp::fcl::python;
+using namespace coal;
+using namespace coal::python;
 
 namespace dv = doxygen::visitor;
 
@@ -58,6 +63,15 @@ template <int index>
 const CollisionGeometry* geto(const Contact& c) {
   return index == 1 ? c.o1 : c.o2;
 }
+
+struct ContactWrapper {
+  static Vec3s getNearestPoint1(const Contact& contact) {
+    return contact.nearest_points[0];
+  }
+  static Vec3s getNearestPoint2(const Contact& contact) {
+    return contact.nearest_points[1];
+  }
+};
 
 void exposeCollisionAPI() {
   if (!eigenpy::register_symbolic_link_to_registered_type<
@@ -80,6 +94,8 @@ void exposeCollisionAPI() {
         .def("clear", &CPUTimes::clear, arg("self"), "Reset the time values.");
   }
 
+  COAL_COMPILER_DIAGNOSTIC_PUSH
+  COAL_COMPILER_DIAGNOSTIC_IGNORED_DEPRECECATED_DECLARATIONS
   if (!eigenpy::register_symbolic_link_to_registered_type<QueryRequest>()) {
     class_<QueryRequest>("QueryRequest", doxygen::class_doc<QueryRequest>(),
                          no_init)
@@ -111,10 +127,15 @@ void exposeCollisionAPI() {
             doxygen::class_attrib_doc<QueryRequest>("enable_cached_gjk_guess"))
         .DEF_RW_CLASS_ATTRIB(QueryRequest, cached_gjk_guess)
         .DEF_RW_CLASS_ATTRIB(QueryRequest, cached_support_func_guess)
+        .DEF_RW_CLASS_ATTRIB(QueryRequest, epa_max_iterations)
+        .DEF_RW_CLASS_ATTRIB(QueryRequest, epa_tolerance)
         .DEF_RW_CLASS_ATTRIB(QueryRequest, enable_timings)
         .DEF_CLASS_FUNC(QueryRequest, updateGuess);
   }
+  COAL_COMPILER_DIAGNOSTIC_POP
 
+  COAL_COMPILER_DIAGNOSTIC_PUSH
+  COAL_COMPILER_DIAGNOSTIC_IGNORED_DEPRECECATED_DECLARATIONS
   if (!eigenpy::register_symbolic_link_to_registered_type<CollisionRequest>()) {
     class_<CollisionRequest, bases<QueryRequest> >(
         "CollisionRequest", doxygen::class_doc<CollisionRequest>(), no_init)
@@ -122,10 +143,30 @@ void exposeCollisionAPI() {
         .def(dv::init<CollisionRequest, const CollisionRequestFlag, size_t>())
         .DEF_RW_CLASS_ATTRIB(CollisionRequest, num_max_contacts)
         .DEF_RW_CLASS_ATTRIB(CollisionRequest, enable_contact)
-        .DEF_RW_CLASS_ATTRIB(CollisionRequest, enable_distance_lower_bound)
+        .add_property(
+            "enable_distance_lower_bound",
+            bp::make_function(
+                +[](CollisionRequest& self) -> bool {
+                  return self.enable_distance_lower_bound;
+                },
+                deprecated_warning_policy<>(
+                    "enable_distance_lower_bound has been marked as "
+                    "deprecated. "
+                    "A lower bound on distance is always computed.\n")),
+            bp::make_function(
+                +[](CollisionRequest& self, const bool value) -> void {
+                  self.enable_distance_lower_bound = value;
+                },
+                deprecated_warning_policy<>(
+                    "enable_distance_lower_bound has been marked as "
+                    "deprecated. "
+                    "A lower bound on distance is always computed.\n")),
+            doxygen::class_attrib_doc<CollisionRequest>(
+                "enable_distance_lower_bound"))
         .DEF_RW_CLASS_ATTRIB(CollisionRequest, security_margin)
         .DEF_RW_CLASS_ATTRIB(CollisionRequest, break_distance)
-        .DEF_RW_CLASS_ATTRIB(CollisionRequest, distance_upper_bound);
+        .DEF_RW_CLASS_ATTRIB(CollisionRequest, distance_upper_bound)
+        .def(SerializableVisitor<CollisionRequest>());
   }
 
   if (!eigenpy::register_symbolic_link_to_registered_type<
@@ -133,6 +174,7 @@ void exposeCollisionAPI() {
     class_<std::vector<CollisionRequest> >("StdVec_CollisionRequest")
         .def(vector_indexing_suite<std::vector<CollisionRequest> >());
   }
+  COAL_COMPILER_DIAGNOSTIC_POP
 
   if (!eigenpy::register_symbolic_link_to_registered_type<Contact>()) {
     class_<Contact>("Contact", doxygen::class_doc<Contact>(),
@@ -140,8 +182,8 @@ void exposeCollisionAPI() {
         .def(dv::init<Contact, const CollisionGeometry*,
                       const CollisionGeometry*, int, int>())
         .def(dv::init<Contact, const CollisionGeometry*,
-                      const CollisionGeometry*, int, int, const Vec3f&,
-                      const Vec3f&, FCL_REAL>())
+                      const CollisionGeometry*, int, int, const Vec3s&,
+                      const Vec3s&, CoalScalar>())
         .add_property(
             "o1",
             make_function(&geto<1>,
@@ -152,9 +194,14 @@ void exposeCollisionAPI() {
             make_function(&geto<2>,
                           return_value_policy<reference_existing_object>()),
             doxygen::class_attrib_doc<Contact>("o2"))
+        .def("getNearestPoint1", &ContactWrapper::getNearestPoint1,
+             doxygen::class_attrib_doc<Contact>("nearest_points"))
+        .def("getNearestPoint2", &ContactWrapper::getNearestPoint2,
+             doxygen::class_attrib_doc<Contact>("nearest_points"))
         .DEF_RW_CLASS_ATTRIB(Contact, b1)
         .DEF_RW_CLASS_ATTRIB(Contact, b2)
         .DEF_RW_CLASS_ATTRIB(Contact, normal)
+        .DEF_RW_CLASS_ATTRIB(Contact, nearest_points)
         .DEF_RW_CLASS_ATTRIB(Contact, pos)
         .DEF_RW_CLASS_ATTRIB(Contact, penetration_depth)
         .def(self == self)
@@ -197,7 +244,8 @@ void exposeCollisionAPI() {
                                  const>(&CollisionResult::getContacts)),
              return_internal_reference<>())
 
-        .DEF_RW_CLASS_ATTRIB(CollisionResult, distance_lower_bound);
+        .DEF_RW_CLASS_ATTRIB(CollisionResult, distance_lower_bound)
+        .def(SerializableVisitor<CollisionResult>());
   }
 
   if (!eigenpy::register_symbolic_link_to_registered_type<
@@ -212,9 +260,9 @@ void exposeCollisionAPI() {
                    const CollisionRequest&, CollisionResult&)>(&collide));
   doxygen::def(
       "collide",
-      static_cast<std::size_t (*)(const CollisionGeometry*, const Transform3f&,
-                                  const CollisionGeometry*, const Transform3f&,
-                                  CollisionRequest&, CollisionResult&)>(
+      static_cast<std::size_t (*)(const CollisionGeometry*, const Transform3s&,
+                                  const CollisionGeometry*, const Transform3s&,
+                                  const CollisionRequest&, CollisionResult&)>(
           &collide));
 
   class_<ComputeCollision>("ComputeCollision",
@@ -223,6 +271,6 @@ void exposeCollisionAPI() {
                     const CollisionGeometry*>())
       .def("__call__",
            static_cast<std::size_t (ComputeCollision::*)(
-               const Transform3f&, const Transform3f&, CollisionRequest&,
+               const Transform3s&, const Transform3s&, const CollisionRequest&,
                CollisionResult&) const>(&ComputeCollision::operator()));
 }

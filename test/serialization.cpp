@@ -1,7 +1,7 @@
 /*
  *  Software License Agreement (BSD License)
  *
- *  Copyright (c) 2021-2022 INRIA.
+ *  Copyright (c) 2021-2023 INRIA.
  *  All rights reserved.
  *
  *  Redistribution and use in source and binary forms, with or without
@@ -32,115 +32,214 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  */
 
-#define BOOST_TEST_MODULE FCL_SERIALIZATION
+#define BOOST_TEST_MODULE COAL_SERIALIZATION
 #include <fstream>
 #include <boost/test/included/unit_test.hpp>
 
-#include <hpp/fcl/collision.h>
-#include <hpp/fcl/distance.h>
-#include <hpp/fcl/BV/OBBRSS.h>
-#include <hpp/fcl/BVH/BVH_model.h>
+#include "coal/fwd.hh"
 
-#include <hpp/fcl/serialization/collision_data.h>
-#include <hpp/fcl/serialization/AABB.h>
-#include <hpp/fcl/serialization/BVH_model.h>
-#include <hpp/fcl/serialization/hfield.h>
-#include <hpp/fcl/serialization/geometric_shapes.h>
-#include <hpp/fcl/serialization/convex.h>
-#include <hpp/fcl/serialization/memory.h>
+COAL_COMPILER_DIAGNOSTIC_PUSH
+COAL_COMPILER_DIAGNOSTIC_IGNORED_DEPRECECATED_DECLARATIONS
+
+#include "coal/collision.h"
+
+#include "coal/contact_patch.h"
+#include "coal/distance.h"
+#include "coal/BV/OBBRSS.h"
+#include "coal/BVH/BVH_model.h"
+
+#include "coal/serialization/collision_data.h"
+#include "coal/serialization/contact_patch.h"
+#include "coal/serialization/AABB.h"
+#include "coal/serialization/BVH_model.h"
+#include "coal/serialization/hfield.h"
+#include "coal/serialization/transform.h"
+#include "coal/serialization/geometric_shapes.h"
+#include "coal/serialization/convex.h"
+#include "coal/serialization/archive.h"
+#include "coal/serialization/memory.h"
+
+#ifdef COAL_HAS_OCTOMAP
+#include "coal/serialization/octree.h"
+#endif
 
 #include "utility.h"
 #include "fcl_resources/config.h"
 
 #include <boost/archive/tmpdir.hpp>
-#include <boost/archive/text_iarchive.hpp>
-#include <boost/archive/text_oarchive.hpp>
-#include <boost/archive/xml_iarchive.hpp>
-#include <boost/archive/xml_oarchive.hpp>
-#include <boost/archive/binary_iarchive.hpp>
-#include <boost/archive/binary_oarchive.hpp>
 #include <boost/filesystem.hpp>
-
-#include <boost/asio/streambuf.hpp>
 
 namespace utf = boost::unit_test::framework;
 
-using namespace hpp::fcl;
-
-template <typename T>
-void saveToBinary(const T& object, boost::asio::streambuf& buffer) {
-  boost::archive::binary_oarchive oa(buffer);
-  oa & object;
-}
-
-template <typename T>
-inline void loadFromBinary(T& object, boost::asio::streambuf& buffer) {
-  boost::archive::binary_iarchive ia(buffer);
-  ia >> object;
-}
+using namespace coal;
 
 template <typename T>
 bool check(const T& value, const T& other) {
   return value == other;
 }
 
+template <typename T>
+bool check_ptr(const T* value, const T* other) {
+  return *value == *other;
+}
+
 enum SerializationMode { TXT = 1, XML = 2, BIN = 4, STREAM = 8 };
+
+template <typename T>
+void test_serialization(const T* value, T& other_value,
+                        const int mode = TXT | XML | BIN | STREAM) {
+  test_serialization(*value, other_value, mode);
+}
+
+template <typename T,
+          bool is_base = std::is_base_of<T, CollisionGeometry>::value>
+struct test_pointer_serialization_impl {
+  static void run(const T&, T&, const int) {}
+};
+
+template <typename T>
+struct test_pointer_serialization_impl<T, true> {
+  static void run(const T& value, T& other_value, const int mode) {
+    const CollisionGeometry* ptr = &value;
+    CollisionGeometry* other_ptr = &other_value;
+
+    const boost::filesystem::path tmp_path(boost::archive::tmpdir());
+    const boost::filesystem::path txt_path("file.txt");
+    const boost::filesystem::path txt_ptr_path("ptr_file.txt");
+    const boost::filesystem::path xml_path("file.xml");
+    const boost::filesystem::path bin_path("file.bin");
+    const boost::filesystem::path txt_filename(tmp_path / txt_path);
+    const boost::filesystem::path xml_filename(tmp_path / xml_path);
+    const boost::filesystem::path bin_filename(tmp_path / bin_path);
+
+    // TXT
+    if (mode & 0x1) {
+      {
+        std::ofstream ofs(txt_filename.c_str());
+
+        boost::archive::text_oarchive oa(ofs);
+        oa << ptr;
+      }
+      BOOST_CHECK(check(*reinterpret_cast<const CollisionGeometry*>(ptr),
+                        *reinterpret_cast<const CollisionGeometry*>(ptr)));
+
+      {
+        std::ifstream ifs(txt_filename.c_str());
+        boost::archive::text_iarchive ia(ifs);
+
+        ia >> other_ptr;
+      }
+      BOOST_CHECK(
+          check(*reinterpret_cast<const CollisionGeometry*>(ptr),
+                *reinterpret_cast<const CollisionGeometry*>(other_ptr)));
+    }
+  }
+};
+
+template <typename T>
+void test_pointer_serialization(const T& value, T& other_value,
+                                const int mode = TXT | XML | BIN | STREAM) {
+  test_pointer_serialization_impl<T>::run(value, other_value, mode);
+}
 
 template <typename T>
 void test_serialization(const T& value, T& other_value,
                         const int mode = TXT | XML | BIN | STREAM) {
   const boost::filesystem::path tmp_path(boost::archive::tmpdir());
   const boost::filesystem::path txt_path("file.txt");
+  const boost::filesystem::path txt_ptr_path("ptr_file.txt");
+  const boost::filesystem::path xml_path("file.xml");
   const boost::filesystem::path bin_path("file.bin");
   const boost::filesystem::path txt_filename(tmp_path / txt_path);
+  const boost::filesystem::path xml_filename(tmp_path / xml_path);
   const boost::filesystem::path bin_filename(tmp_path / bin_path);
 
   // TXT
   if (mode & 0x1) {
+    // -- TXT
     {
-      std::ofstream ofs(txt_filename.c_str());
+      const std::string filename = txt_filename.string();
+      coal::serialization::saveToText(value, filename);
+      BOOST_CHECK(check(value, value));
 
-      boost::archive::text_oarchive oa(ofs);
-      oa << value;
+      coal::serialization::loadFromText(other_value, filename);
+      BOOST_CHECK(check(value, other_value));
     }
-    BOOST_CHECK(check(value, value));
 
+    // -- String stream (TXT format)
     {
-      std::ifstream ifs(txt_filename.c_str());
-      boost::archive::text_iarchive ia(ifs);
+      std::stringstream ss_out;
+      coal::serialization::saveToStringStream(value, ss_out);
+      BOOST_CHECK(check(value, value));
 
-      ia >> other_value;
+      std::istringstream ss_in(ss_out.str());
+      coal::serialization::loadFromStringStream(other_value, ss_in);
+      BOOST_CHECK(check(value, other_value));
     }
-    BOOST_CHECK(check(value, other_value));
+
+    // -- String
+    {
+      const std::string str_out = coal::serialization::saveToString(value);
+      BOOST_CHECK(check(value, value));
+
+      const std::string str_in(str_out);
+      coal::serialization::loadFromString(other_value, str_in);
+      BOOST_CHECK(check(value, other_value));
+    }
+  }
+
+  // XML
+  if (mode & 0x2) {
+    {
+      const std::string filename = xml_filename.string();
+      const std::string xml_tag = "value";
+      coal::serialization::saveToXML(value, filename, xml_tag);
+      BOOST_CHECK(check(value, value));
+
+      coal::serialization::loadFromXML(other_value, filename, xml_tag);
+      BOOST_CHECK(check(value, other_value));
+    }
   }
 
   // BIN
   if (mode & 0x4) {
     {
-      std::ofstream ofs(bin_filename.c_str(), std::ios::binary);
-      boost::archive::binary_oarchive oa(ofs);
-      oa << value;
-    }
-    BOOST_CHECK(check(value, value));
+      const std::string filename = bin_filename.string();
+      coal::serialization::saveToBinary(value, filename);
+      BOOST_CHECK(check(value, value));
 
-    {
-      std::ifstream ifs(bin_filename.c_str(), std::ios::binary);
-      boost::archive::binary_iarchive ia(ifs);
-
-      ia >> other_value;
+      coal::serialization::loadFromBinary(other_value, filename);
+      BOOST_CHECK(check(value, other_value));
     }
-    BOOST_CHECK(check(value, other_value));
   }
 
   // Stream Buffer
   if (mode & 0x8) {
-    boost::asio::streambuf buffer;
-    saveToBinary(value, buffer);
-    BOOST_CHECK(check(value, value));
+    {
+      boost::asio::streambuf buffer;
+      coal::serialization::saveToBuffer(value, buffer);
+      BOOST_CHECK(check(value, value));
 
-    loadFromBinary(other_value, buffer);
-    BOOST_CHECK(check(value, other_value));
+      coal::serialization::loadFromBuffer(other_value, buffer);
+      BOOST_CHECK(check(value, other_value));
+    }
   }
+
+  // Test std::shared_ptr<T>
+  {
+    const boost::filesystem::path txt_ptr_filename(tmp_path / txt_ptr_path);
+    std::shared_ptr<T> ptr = std::make_shared<T>(value);
+
+    const std::string filename = txt_ptr_filename.string();
+    coal::serialization::saveToText(ptr, filename);
+    BOOST_CHECK(check_ptr(ptr.get(), ptr.get()));
+
+    std::shared_ptr<T> other_ptr = nullptr;
+    coal::serialization::loadFromText(other_ptr, filename);
+    BOOST_CHECK(check_ptr(ptr.get(), other_ptr.get()));
+  }
+
+  test_pointer_serialization(value, other_value);
 }
 
 template <typename T>
@@ -151,12 +250,12 @@ void test_serialization(const T& value,
 }
 
 BOOST_AUTO_TEST_CASE(test_aabb) {
-  AABB aabb(-Vec3f::Ones(), Vec3f::Ones());
+  AABB aabb(-Vec3s::Ones(), Vec3s::Ones());
   test_serialization(aabb);
 }
 
 BOOST_AUTO_TEST_CASE(test_collision_data) {
-  Contact contact(NULL, NULL, 1, 2, Vec3f::Ones(), Vec3f::Zero(), -10.);
+  Contact contact(NULL, NULL, 1, 2, Vec3s::Ones(), Vec3s::Zero(), -10.);
   test_serialization(contact);
 
   CollisionRequest collision_request(CONTACT, 10);
@@ -166,6 +265,9 @@ BOOST_AUTO_TEST_CASE(test_collision_data) {
   collision_result.addContact(contact);
   collision_result.addContact(contact);
   collision_result.distance_lower_bound = 0.1;
+  collision_result.normal.setOnes();
+  collision_result.nearest_points[0].setRandom();
+  collision_result.nearest_points[1].setRandom();
   test_serialization(collision_result);
 
   DistanceRequest distance_request(true, 1., 2.);
@@ -176,10 +278,55 @@ BOOST_AUTO_TEST_CASE(test_collision_data) {
   distance_result.nearest_points[0].setRandom();
   distance_result.nearest_points[1].setRandom();
   test_serialization(distance_result);
+
+  {
+    // Serializing contact patches.
+    const Halfspace hspace(0, 0, 1, 0);
+    const CoalScalar radius = 0.25;
+    const CoalScalar height = 1.;
+    const Cylinder cylinder(radius, height);
+
+    const Transform3s tf1;
+    Transform3s tf2;
+    // set translation to have a collision
+    const CoalScalar offset = 0.001;
+    tf2.setTranslation(Vec3s(0, 0, height / 2 - offset));
+
+    const size_t num_max_contact = 1;
+    const CollisionRequest col_req(CollisionRequestFlag::CONTACT,
+                                   num_max_contact);
+    CollisionResult col_res;
+    coal::collide(&hspace, tf1, &cylinder, tf2, col_req, col_res);
+    BOOST_CHECK(col_res.isCollision());
+    if (col_res.isCollision()) {
+      ContactPatchRequest patch_req;
+      ContactPatchResult patch_res(patch_req);
+      coal::computeContactPatch(&hspace, tf1, &cylinder, tf2, col_res,
+                                patch_req, patch_res);
+      BOOST_CHECK(patch_res.numContactPatches() == 1);
+
+      // Serialize patch request, result and the patch itself
+      test_serialization(patch_req);
+      test_serialization(patch_res);
+      if (patch_res.numContactPatches() > 0) {
+        test_serialization(patch_res.getContactPatch(0));
+      }
+    }
+  }
+}
+
+template <typename T>
+void checkEqualStdVector(const std::vector<T>& v1, const std::vector<T>& v2) {
+  BOOST_CHECK(v1.size() == v2.size());
+  if (v1.size() == v2.size()) {
+    for (size_t i = 0; i < v1.size(); i++) {
+      BOOST_CHECK(v1[i] == v2[i]);
+    }
+  }
 }
 
 BOOST_AUTO_TEST_CASE(test_BVHModel) {
-  std::vector<Vec3f> p1, p2;
+  std::vector<Vec3s> p1, p2;
   std::vector<Triangle> t1, t2;
   boost::filesystem::path path(TEST_RESOURCES_DIR);
 
@@ -191,11 +338,19 @@ BOOST_AUTO_TEST_CASE(test_BVHModel) {
   m1.beginModel();
   m1.addSubModel(p1, t1);
   m1.endModel();
+  BOOST_CHECK(m1.num_vertices == p1.size());
+  BOOST_CHECK(m1.num_tris == t1.size());
+  checkEqualStdVector(*m1.vertices, p1);
+  checkEqualStdVector(*m1.tri_indices, t1);
   BOOST_CHECK(m1 == m1);
 
   m2.beginModel();
   m2.addSubModel(p2, t2);
   m2.endModel();
+  BOOST_CHECK(m2.num_vertices == p2.size());
+  BOOST_CHECK(m2.num_tris == t2.size());
+  checkEqualStdVector(*m2.vertices, p2);
+  checkEqualStdVector(*m2.tri_indices, t2);
   BOOST_CHECK(m2 == m2);
   BOOST_CHECK(m1 != m2);
 
@@ -210,9 +365,9 @@ BOOST_AUTO_TEST_CASE(test_BVHModel) {
   }
 }
 
-#ifdef HPP_FCL_HAS_QHULL
+#ifdef COAL_HAS_QHULL
 BOOST_AUTO_TEST_CASE(test_Convex) {
-  std::vector<Vec3f> p1;
+  std::vector<Vec3s> p1;
   std::vector<Triangle> t1;
   boost::filesystem::path path(TEST_RESOURCES_DIR);
 
@@ -233,14 +388,39 @@ BOOST_AUTO_TEST_CASE(test_Convex) {
     Convex<Triangle> convex_copy;
     test_serialization(convex, convex_copy);
   }
+
+  // Test std::shared_ptr<CollisionGeometry>
+  {
+    const boost::filesystem::path tmp_dir(boost::archive::tmpdir());
+    // TODO(louis): understand why serializing a shared_ptr<CollisionGeometry>
+    // in TXT format fails only on MacOS + -O0.
+    // const boost::filesystem::path txt_filename = tmp_dir / "file.txt";
+    // const boost::filesystem::path bin_filename = tmp_dir / "file.bin";
+    const boost::filesystem::path xml_filename = tmp_dir / "file.xml";
+    Convex<Triangle> convex_copy;
+
+    std::shared_ptr<CollisionGeometry> ptr =
+        std::make_shared<Convex<Triangle>>(convex);
+    BOOST_CHECK(ptr.get());
+    const std::string filename = xml_filename.string();
+    const std::string tag_name = "CollisionGeometry";
+    coal::serialization::saveToXML(ptr, filename, tag_name);
+    BOOST_CHECK(check(*reinterpret_cast<Convex<Triangle>*>(ptr.get()), convex));
+
+    std::shared_ptr<CollisionGeometry> other_ptr = nullptr;
+    BOOST_CHECK(!other_ptr.get());
+    coal::serialization::loadFromXML(other_ptr, filename, tag_name);
+    BOOST_CHECK(
+        check(convex, *reinterpret_cast<Convex<Triangle>*>(other_ptr.get())));
+  }
 }
 #endif
 
 BOOST_AUTO_TEST_CASE(test_HeightField) {
-  const FCL_REAL min_altitude = -1.;
-  const FCL_REAL x_dim = 1., y_dim = 2.;
+  const CoalScalar min_altitude = -1.;
+  const CoalScalar x_dim = 1., y_dim = 2.;
   const Eigen::DenseIndex nx = 100, ny = 200;
-  const MatrixXf heights = MatrixXf::Random(ny, nx);
+  const MatrixXs heights = MatrixXs::Random(ny, nx);
 
   HeightField<OBBRSS> hfield(x_dim, y_dim, heights, min_altitude);
 
@@ -255,59 +435,146 @@ BOOST_AUTO_TEST_CASE(test_HeightField) {
   }
 }
 
+BOOST_AUTO_TEST_CASE(test_transform) {
+  Transform3s T;
+  T.setQuatRotation(Quaternion3f::UnitRandom());
+  T.setTranslation(Vec3s::Random());
+
+  Transform3s T_copy;
+  test_serialization(T, T_copy);
+}
+
 BOOST_AUTO_TEST_CASE(test_shapes) {
   {
-    TriangleP triangle(Vec3f::UnitX(), Vec3f::UnitY(), Vec3f::UnitZ());
-    TriangleP triangle_copy(Vec3f::Random(), Vec3f::Random(), Vec3f::Random());
+    TriangleP triangle(Vec3s::UnitX(), Vec3s::UnitY(), Vec3s::UnitZ());
+    triangle.setSweptSphereRadius(1.);
+    triangle.computeLocalAABB();
+    TriangleP triangle_copy(Vec3s::Random(), Vec3s::Random(), Vec3s::Random());
     test_serialization(triangle, triangle_copy);
   }
 
   {
-    Box box(Vec3f::UnitX()), box_copy(Vec3f::Random());
+    Box box(Vec3s::UnitX()), box_copy(Vec3s::Random());
+    box.setSweptSphereRadius(1.);
+    box.computeLocalAABB();
     test_serialization(box, box_copy);
   }
 
   {
     Sphere sphere(1.), sphere_copy(2.);
+    sphere.setSweptSphereRadius(1.);
+    sphere.computeLocalAABB();
     test_serialization(sphere, sphere_copy);
   }
 
   {
     Ellipsoid ellipsoid(1., 2., 3.), ellipsoid_copy(0., 0., 0.);
+    ellipsoid.setSweptSphereRadius(1.);
+    ellipsoid.computeLocalAABB();
     test_serialization(ellipsoid, ellipsoid_copy);
   }
 
   {
     Capsule capsule(1., 2.), capsule_copy(10., 10.);
+    capsule.setSweptSphereRadius(1.);
+    capsule.computeLocalAABB();
     test_serialization(capsule, capsule_copy);
   }
 
   {
     Cone cone(1., 2.), cone_copy(10., 10.);
+    cone.setSweptSphereRadius(1.);
+    cone.computeLocalAABB();
     test_serialization(cone, cone_copy);
   }
 
   {
     Cylinder cylinder(1., 2.), cylinder_copy(10., 10.);
+    cylinder.setSweptSphereRadius(1.);
+    cylinder.computeLocalAABB();
     test_serialization(cylinder, cylinder_copy);
   }
 
   {
-    Halfspace hs(Vec3f::Random(), 1.), hs_copy(Vec3f::Zero(), 0.);
+    Halfspace hs(Vec3s::Random(), 1.), hs_copy(Vec3s::Zero(), 0.);
+    hs.setSweptSphereRadius(1.);
+    hs.computeLocalAABB();
     test_serialization(hs, hs_copy);
   }
 
   {
-    Plane plane(Vec3f::Random(), 1.), plane_copy(Vec3f::Zero(), 0.);
+    Plane plane(Vec3s::Random(), 1.), plane_copy(Vec3s::Zero(), 0.);
+    plane.setSweptSphereRadius(1.);
+    plane.computeLocalAABB();
     test_serialization(plane, plane_copy);
   }
+
+#ifdef HPP_FCL_HAS_QHULL
+  {
+    const size_t num_points = 500;
+    std::shared_ptr<std::vector<Vec3s>> points =
+        std::make_shared<std::vector<Vec3s>>();
+    points->reserve(num_points);
+    for (size_t i = 0; i < num_points; i++) {
+      points->emplace_back(Vec3s::Random());
+    }
+    using Convex = Convex<Triangle>;
+    std::unique_ptr<Convex> convex =
+        std::unique_ptr<Convex>(static_cast<Convex*>(ConvexBase::convexHull(
+            points, static_cast<unsigned int>(points->size()), true)));
+    convex->setSweptSphereRadius(1.);
+    convex->computeLocalAABB();
+
+    Convex convex_copy;
+    test_serialization(*convex, convex_copy);
+  }
+#endif
 }
+
+#ifdef COAL_HAS_OCTOMAP
+BOOST_AUTO_TEST_CASE(test_octree) {
+  const CoalScalar resolution = 1e-2;
+  const MatrixX3s points = MatrixX3s::Random(1000, 3);
+  OcTreePtr_t octree_ptr = makeOctree(points, resolution);
+  const OcTree& octree = *octree_ptr.get();
+
+  const boost::filesystem::path tmp_dir(boost::archive::tmpdir());
+  const boost::filesystem::path txt_filename = tmp_dir / "file.txt";
+  const boost::filesystem::path bin_filename = tmp_dir / "file.bin";
+
+  {
+    std::ofstream ofs(bin_filename.c_str(), std::ios::binary);
+    boost::archive::binary_oarchive oa(ofs);
+    oa << octree;
+  }
+
+  OcTree octree_value(1.);
+  {
+    std::ifstream ifs(bin_filename.c_str(),
+                      std::fstream::binary | std::fstream::in);
+    boost::archive::binary_iarchive ia(ifs);
+
+    ia >> octree_value;
+  }
+
+  BOOST_CHECK(octree.getTree() == octree.getTree());
+  BOOST_CHECK(octree_value.getTree() == octree_value.getTree());
+  //  BOOST_CHECK(octree.getTree() == octree_value.getTree());
+  BOOST_CHECK(octree.getResolution() == octree_value.getResolution());
+  BOOST_CHECK(octree.getTree()->size() == octree_value.getTree()->size());
+  BOOST_CHECK(octree.toBoxes().size() == octree_value.toBoxes().size());
+  BOOST_CHECK(octree == octree_value);
+
+  OcTree octree_copy(1.);
+  test_serialization(octree, octree_copy);
+}
+#endif
 
 BOOST_AUTO_TEST_CASE(test_memory_footprint) {
   Sphere sphere(1.);
   BOOST_CHECK(sizeof(Sphere) == computeMemoryFootprint(sphere));
 
-  std::vector<Vec3f> p1;
+  std::vector<Vec3s> p1;
   std::vector<Triangle> t1;
   boost::filesystem::path path(TEST_RESOURCES_DIR);
 
@@ -325,3 +592,5 @@ BOOST_AUTO_TEST_CASE(test_memory_footprint) {
   BOOST_CHECK(static_cast<size_t>(m1.memUsage(false)) ==
               computeMemoryFootprint(m1));
 }
+
+COAL_COMPILER_DIAGNOSTIC_POP

@@ -3,6 +3,7 @@
  *
  *  Copyright (c) 2011-2014, Willow Garage, Inc.
  *  Copyright (c) 2014-2015, Open Source Robotics Foundation
+ *  Copyright (c) 2021-2024, INRIA
  *  All rights reserved.
  *
  *  Redistribution and use in source and binary forms, with or without
@@ -35,501 +36,61 @@
 
 /** \author Jia Pan */
 
-#include <hpp/fcl/narrowphase/gjk.h>
-#include <hpp/fcl/internal/intersect.h>
-#include <hpp/fcl/internal/tools.h>
-#include <hpp/fcl/shape/geometric_shapes_traits.h>
+#include "coal/shape/geometric_shapes.h"
+#include "coal/narrowphase/gjk.h"
+#include "coal/internal/intersect.h"
+#include "coal/internal/tools.h"
+#include "coal/shape/geometric_shapes_traits.h"
+#include "coal/narrowphase/narrowphase_defaults.h"
 
-namespace hpp {
-namespace fcl {
+namespace coal {
 
 namespace details {
-
-void getShapeSupport(const TriangleP* triangle, const Vec3f& dir,
-                     Vec3f& support, int&, MinkowskiDiff::ShapeData*) {
-  FCL_REAL dota = dir.dot(triangle->a);
-  FCL_REAL dotb = dir.dot(triangle->b);
-  FCL_REAL dotc = dir.dot(triangle->c);
-  if (dota > dotb) {
-    if (dotc > dota)
-      support = triangle->c;
-    else
-      support = triangle->a;
-  } else {
-    if (dotc > dotb)
-      support = triangle->c;
-    else
-      support = triangle->b;
-  }
-}
-
-inline void getShapeSupport(const Box* box, const Vec3f& dir, Vec3f& support,
-                            int&, MinkowskiDiff::ShapeData*) {
-  const FCL_REAL inflate = (dir.array() == 0).any() ? 1.00000001 : 1.;
-  support.noalias() =
-      (dir.array() > 0)
-          .select(inflate * box->halfSide, -inflate * box->halfSide);
-}
-
-inline void getShapeSupport(const Sphere*, const Vec3f& /*dir*/, Vec3f& support,
-                            int&, MinkowskiDiff::ShapeData*) {
-  support.setZero();
-}
-
-inline void getShapeSupport(const Ellipsoid* ellipsoid, const Vec3f& dir,
-                            Vec3f& support, int&, MinkowskiDiff::ShapeData*) {
-  FCL_REAL a2 = ellipsoid->radii[0] * ellipsoid->radii[0];
-  FCL_REAL b2 = ellipsoid->radii[1] * ellipsoid->radii[1];
-  FCL_REAL c2 = ellipsoid->radii[2] * ellipsoid->radii[2];
-
-  Vec3f v(a2 * dir[0], b2 * dir[1], c2 * dir[2]);
-
-  FCL_REAL d = std::sqrt(v.dot(dir));
-
-  support = v / d;
-}
-
-inline void getShapeSupport(const Capsule* capsule, const Vec3f& dir,
-                            Vec3f& support, int&, MinkowskiDiff::ShapeData*) {
-  support.head<2>().setZero();
-  if (dir[2] > 0)
-    support[2] = capsule->halfLength;
-  else
-    support[2] = -capsule->halfLength;
-}
-
-void getShapeSupport(const Cone* cone, const Vec3f& dir, Vec3f& support, int&,
-                     MinkowskiDiff::ShapeData*) {
-  // The cone radius is, for -h < z < h, (h - z) * r / (2*h)
-  static const FCL_REAL inflate = 1.00001;
-  FCL_REAL h = cone->halfLength;
-  FCL_REAL r = cone->radius;
-
-  if (dir.head<2>().isZero()) {
-    support.head<2>().setZero();
-    if (dir[2] > 0)
-      support[2] = h;
-    else
-      support[2] = -inflate * h;
-    return;
-  }
-  FCL_REAL zdist = dir[0] * dir[0] + dir[1] * dir[1];
-  FCL_REAL len = zdist + dir[2] * dir[2];
-  zdist = std::sqrt(zdist);
-
-  if (dir[2] <= 0) {
-    FCL_REAL rad = r / zdist;
-    support.head<2>() = rad * dir.head<2>();
-    support[2] = -h;
-    return;
-  }
-
-  len = std::sqrt(len);
-  FCL_REAL sin_a = r / std::sqrt(r * r + 4 * h * h);
-
-  if (dir[2] > len * sin_a)
-    support << 0, 0, h;
-  else {
-    FCL_REAL rad = r / zdist;
-    support.head<2>() = rad * dir.head<2>();
-    support[2] = -h;
-  }
-}
-
-void getShapeSupport(const Cylinder* cylinder, const Vec3f& dir, Vec3f& support,
-                     int&, MinkowskiDiff::ShapeData*) {
-  // The inflation makes the object look strictly convex to GJK and EPA. This
-  // helps solving particular cases (e.g. a cylinder with itself at the same
-  // position...)
-  static const FCL_REAL inflate = 1.00001;
-  FCL_REAL half_h = cylinder->halfLength;
-  FCL_REAL r = cylinder->radius;
-
-  if (dir.head<2>() == Eigen::Matrix<FCL_REAL, 2, 1>::Zero()) half_h *= inflate;
-
-  if (dir[2] > 0)
-    support[2] = half_h;
-  else if (dir[2] < 0)
-    support[2] = -half_h;
-  else {
-    support[2] = 0;
-    r *= inflate;
-  }
-  if (dir.head<2>() == Eigen::Matrix<FCL_REAL, 2, 1>::Zero())
-    support.head<2>().setZero();
-  else
-    support.head<2>() = dir.head<2>().normalized() * r;
-  assert(fabs(support[0] * dir[1] - support[1] * dir[0]) <
-         sqrt(std::numeric_limits<FCL_REAL>::epsilon()));
-}
-
-struct SmallConvex : ShapeBase {};
-struct LargeConvex : ShapeBase {};
-
-void getShapeSupportLog(const ConvexBase* convex, const Vec3f& dir,
-                        Vec3f& support, int& hint,
-                        MinkowskiDiff::ShapeData* data) {
-  assert(data != NULL);
-
-  const Vec3f* pts = convex->points;
-  const ConvexBase::Neighbors* nn = convex->neighbors;
-
-  if (hint < 0 || hint >= (int)convex->num_points) hint = 0;
-  FCL_REAL maxdot = pts[hint].dot(dir);
-  std::vector<int8_t>& visited = data->visited;
-  visited.assign(convex->num_points, false);
-  visited[static_cast<std::size_t>(hint)] = true;
-  // when the first face is orthogonal to dir, all the dot products will be
-  // equal. Yet, the neighbors must be visited.
-  bool found = true, loose_check = true;
-  while (found) {
-    const ConvexBase::Neighbors& n = nn[hint];
-    found = false;
-    for (int in = 0; in < n.count(); ++in) {
-      const unsigned int ip = n[in];
-      if (visited[ip]) continue;
-      visited[ip] = true;
-      const FCL_REAL dot = pts[ip].dot(dir);
-      bool better = false;
-      if (dot > maxdot) {
-        better = true;
-        loose_check = false;
-      } else if (loose_check && dot == maxdot)
-        better = true;
-      if (better) {
-        maxdot = dot;
-        hint = static_cast<int>(ip);
-        found = true;
-      }
-    }
-  }
-
-  support = pts[hint];
-}
-
-void getShapeSupportLinear(const ConvexBase* convex, const Vec3f& dir,
-                           Vec3f& support, int& hint,
-                           MinkowskiDiff::ShapeData*) {
-  const Vec3f* pts = convex->points;
-
-  hint = 0;
-  FCL_REAL maxdot = pts[0].dot(dir);
-  for (int i = 1; i < (int)convex->num_points; ++i) {
-    FCL_REAL dot = pts[i].dot(dir);
-    if (dot > maxdot) {
-      maxdot = dot;
-      hint = i;
-    }
-  }
-  support = pts[hint];
-}
-
-void getShapeSupport(const ConvexBase* convex, const Vec3f& dir, Vec3f& support,
-                     int& hint, MinkowskiDiff::ShapeData*) {
-  // TODO add benchmark to set a proper value for switching between linear and
-  // logarithmic.
-  if (convex->num_points > 32) {
-    MinkowskiDiff::ShapeData data;
-    getShapeSupportLog(convex, dir, support, hint, &data);
-  } else
-    getShapeSupportLinear(convex, dir, support, hint, NULL);
-}
-
-inline void getShapeSupport(const SmallConvex* convex, const Vec3f& dir,
-                            Vec3f& support, int& hint,
-                            MinkowskiDiff::ShapeData* data) {
-  getShapeSupportLinear(reinterpret_cast<const ConvexBase*>(convex), dir,
-                        support, hint, data);
-}
-
-inline void getShapeSupport(const LargeConvex* convex, const Vec3f& dir,
-                            Vec3f& support, int& hint,
-                            MinkowskiDiff::ShapeData* data) {
-  getShapeSupportLog(reinterpret_cast<const ConvexBase*>(convex), dir, support,
-                     hint, data);
-}
-
-#define CALL_GET_SHAPE_SUPPORT(ShapeType)                              \
-  getShapeSupport(                                                     \
-      static_cast<const ShapeType*>(shape),                            \
-      (shape_traits<ShapeType>::NeedNormalizedDir && !dirIsNormalized) \
-          ? dir.normalized()                                           \
-          : dir,                                                       \
-      support, hint, NULL)
-
-Vec3f getSupport(const ShapeBase* shape, const Vec3f& dir, bool dirIsNormalized,
-                 int& hint) {
-  Vec3f support;
-  switch (shape->getNodeType()) {
-    case GEOM_TRIANGLE:
-      CALL_GET_SHAPE_SUPPORT(TriangleP);
-      break;
-    case GEOM_BOX:
-      CALL_GET_SHAPE_SUPPORT(Box);
-      break;
-    case GEOM_SPHERE:
-      CALL_GET_SHAPE_SUPPORT(Sphere);
-      break;
-    case GEOM_ELLIPSOID:
-      CALL_GET_SHAPE_SUPPORT(Ellipsoid);
-      break;
-    case GEOM_CAPSULE:
-      CALL_GET_SHAPE_SUPPORT(Capsule);
-      break;
-    case GEOM_CONE:
-      CALL_GET_SHAPE_SUPPORT(Cone);
-      break;
-    case GEOM_CYLINDER:
-      CALL_GET_SHAPE_SUPPORT(Cylinder);
-      break;
-    case GEOM_CONVEX:
-      CALL_GET_SHAPE_SUPPORT(ConvexBase);
-      break;
-    case GEOM_PLANE:
-    case GEOM_HALFSPACE:
-    default:
-      support.setZero();
-      ;  // nothing
-  }
-
-  return support;
-}
-
-#undef CALL_GET_SHAPE_SUPPORT
-
-template <typename Shape0, typename Shape1, bool TransformIsIdentity>
-void getSupportTpl(const Shape0* s0, const Shape1* s1, const Matrix3f& oR1,
-                   const Vec3f& ot1, const Vec3f& dir, Vec3f& support0,
-                   Vec3f& support1, support_func_guess_t& hint,
-                   MinkowskiDiff::ShapeData data[2]) {
-  getShapeSupport(s0, dir, support0, hint[0], &(data[0]));
-  if (TransformIsIdentity)
-    getShapeSupport(s1, -dir, support1, hint[1], &(data[1]));
-  else {
-    getShapeSupport(s1, -oR1.transpose() * dir, support1, hint[1], &(data[1]));
-    support1 = oR1 * support1 + ot1;
-  }
-}
-
-template <typename Shape0, typename Shape1, bool TransformIsIdentity>
-void getSupportFuncTpl(const MinkowskiDiff& md, const Vec3f& dir,
-                       bool dirIsNormalized, Vec3f& support0, Vec3f& support1,
-                       support_func_guess_t& hint,
-                       MinkowskiDiff::ShapeData data[2]) {
-  enum {
-    NeedNormalizedDir = bool((bool)shape_traits<Shape0>::NeedNormalizedDir ||
-                             (bool)shape_traits<Shape1>::NeedNormalizedDir)
-  };
-#ifndef NDEBUG
-  // Need normalized direction and direction is normalized
-  assert(!NeedNormalizedDir || !dirIsNormalized ||
-         fabs(dir.squaredNorm() - 1) < 1e-6);
-  // Need normalized direction but direction is not normalized.
-  assert(!NeedNormalizedDir || dirIsNormalized ||
-         fabs(dir.normalized().squaredNorm() - 1) < 1e-6);
-  // Don't need normalized direction. Check that dir is not zero.
-  assert(NeedNormalizedDir || dir.cwiseAbs().maxCoeff() >= 1e-6);
-#endif
-  getSupportTpl<Shape0, Shape1, TransformIsIdentity>(
-      static_cast<const Shape0*>(md.shapes[0]),
-      static_cast<const Shape1*>(md.shapes[1]), md.oR1, md.ot1,
-      (NeedNormalizedDir && !dirIsNormalized) ? dir.normalized() : dir,
-      support0, support1, hint, data);
-}
-
-template <typename Shape0>
-MinkowskiDiff::GetSupportFunction makeGetSupportFunction1(
-    const ShapeBase* s1, bool identity, Eigen::Array<FCL_REAL, 1, 2>& inflation,
-    int linear_log_convex_threshold) {
-  inflation[1] = 0;
-  switch (s1->getNodeType()) {
-    case GEOM_TRIANGLE:
-      if (identity)
-        return getSupportFuncTpl<Shape0, TriangleP, true>;
-      else
-        return getSupportFuncTpl<Shape0, TriangleP, false>;
-    case GEOM_BOX:
-      if (identity)
-        return getSupportFuncTpl<Shape0, Box, true>;
-      else
-        return getSupportFuncTpl<Shape0, Box, false>;
-    case GEOM_SPHERE:
-      inflation[1] = static_cast<const Sphere*>(s1)->radius;
-      if (identity)
-        return getSupportFuncTpl<Shape0, Sphere, true>;
-      else
-        return getSupportFuncTpl<Shape0, Sphere, false>;
-    case GEOM_ELLIPSOID:
-      if (identity)
-        return getSupportFuncTpl<Shape0, Ellipsoid, true>;
-      else
-        return getSupportFuncTpl<Shape0, Ellipsoid, false>;
-    case GEOM_CAPSULE:
-      inflation[1] = static_cast<const Capsule*>(s1)->radius;
-      if (identity)
-        return getSupportFuncTpl<Shape0, Capsule, true>;
-      else
-        return getSupportFuncTpl<Shape0, Capsule, false>;
-    case GEOM_CONE:
-      if (identity)
-        return getSupportFuncTpl<Shape0, Cone, true>;
-      else
-        return getSupportFuncTpl<Shape0, Cone, false>;
-    case GEOM_CYLINDER:
-      if (identity)
-        return getSupportFuncTpl<Shape0, Cylinder, true>;
-      else
-        return getSupportFuncTpl<Shape0, Cylinder, false>;
-    case GEOM_CONVEX:
-      if ((int)static_cast<const ConvexBase*>(s1)->num_points >
-          linear_log_convex_threshold) {
-        if (identity)
-          return getSupportFuncTpl<Shape0, LargeConvex, true>;
-        else
-          return getSupportFuncTpl<Shape0, LargeConvex, false>;
-      } else {
-        if (identity)
-          return getSupportFuncTpl<Shape0, SmallConvex, true>;
-        else
-          return getSupportFuncTpl<Shape0, SmallConvex, false>;
-      }
-    default:
-      throw std::logic_error("Unsupported geometric shape");
-  }
-}
-
-MinkowskiDiff::GetSupportFunction makeGetSupportFunction0(
-    const ShapeBase* s0, const ShapeBase* s1, bool identity,
-    Eigen::Array<FCL_REAL, 1, 2>& inflation, int linear_log_convex_threshold) {
-  inflation[0] = 0;
-  switch (s0->getNodeType()) {
-    case GEOM_TRIANGLE:
-      return makeGetSupportFunction1<TriangleP>(s1, identity, inflation,
-                                                linear_log_convex_threshold);
-      break;
-    case GEOM_BOX:
-      return makeGetSupportFunction1<Box>(s1, identity, inflation,
-                                          linear_log_convex_threshold);
-      break;
-    case GEOM_SPHERE:
-      inflation[0] = static_cast<const Sphere*>(s0)->radius;
-      return makeGetSupportFunction1<Sphere>(s1, identity, inflation,
-                                             linear_log_convex_threshold);
-      break;
-    case GEOM_ELLIPSOID:
-      return makeGetSupportFunction1<Ellipsoid>(s1, identity, inflation,
-                                                linear_log_convex_threshold);
-      break;
-    case GEOM_CAPSULE:
-      inflation[0] = static_cast<const Capsule*>(s0)->radius;
-      return makeGetSupportFunction1<Capsule>(s1, identity, inflation,
-                                              linear_log_convex_threshold);
-      break;
-    case GEOM_CONE:
-      return makeGetSupportFunction1<Cone>(s1, identity, inflation,
-                                           linear_log_convex_threshold);
-      break;
-    case GEOM_CYLINDER:
-      return makeGetSupportFunction1<Cylinder>(s1, identity, inflation,
-                                               linear_log_convex_threshold);
-      break;
-    case GEOM_CONVEX:
-      if ((int)static_cast<const ConvexBase*>(s0)->num_points >
-          linear_log_convex_threshold)
-        return makeGetSupportFunction1<LargeConvex>(
-            s1, identity, inflation, linear_log_convex_threshold);
-      else
-        return makeGetSupportFunction1<SmallConvex>(
-            s1, identity, inflation, linear_log_convex_threshold);
-      break;
-    default:
-      throw std::logic_error("Unsupported geometric shape");
-  }
-}
-
-bool getNormalizeSupportDirection(const ShapeBase* shape) {
-  switch (shape->getNodeType()) {
-    case GEOM_TRIANGLE:
-      return (bool)shape_traits<TriangleP>::NeedNesterovNormalizeHeuristic;
-      break;
-    case GEOM_BOX:
-      return (bool)shape_traits<Box>::NeedNesterovNormalizeHeuristic;
-      break;
-    case GEOM_SPHERE:
-      return (bool)shape_traits<Sphere>::NeedNesterovNormalizeHeuristic;
-      break;
-    case GEOM_ELLIPSOID:
-      return (bool)shape_traits<Ellipsoid>::NeedNesterovNormalizeHeuristic;
-      break;
-    case GEOM_CAPSULE:
-      return (bool)shape_traits<Capsule>::NeedNesterovNormalizeHeuristic;
-      break;
-    case GEOM_CONE:
-      return (bool)shape_traits<Cone>::NeedNesterovNormalizeHeuristic;
-      break;
-    case GEOM_CYLINDER:
-      return (bool)shape_traits<Cylinder>::NeedNesterovNormalizeHeuristic;
-      break;
-    case GEOM_CONVEX:
-      return (bool)shape_traits<ConvexBase>::NeedNesterovNormalizeHeuristic;
-      break;
-    default:
-      throw std::logic_error("Unsupported geometric shape");
-  }
-}
-
-void getNormalizeSupportDirectionFromShapes(const ShapeBase* shape0,
-                                            const ShapeBase* shape1,
-                                            bool& normalize_support_direction) {
-  normalize_support_direction = getNormalizeSupportDirection(shape0) &&
-                                getNormalizeSupportDirection(shape1);
-}
-
-void MinkowskiDiff::set(const ShapeBase* shape0, const ShapeBase* shape1,
-                        const Transform3f& tf0, const Transform3f& tf1) {
-  shapes[0] = shape0;
-  shapes[1] = shape1;
-  getNormalizeSupportDirectionFromShapes(shape0, shape1,
-                                         normalize_support_direction);
-
-  oR1.noalias() = tf0.getRotation().transpose() * tf1.getRotation();
-  ot1.noalias() = tf0.getRotation().transpose() *
-                  (tf1.getTranslation() - tf0.getTranslation());
-
-  bool identity = (oR1.isIdentity() && ot1.isZero());
-
-  getSupportFunc = makeGetSupportFunction0(shape0, shape1, identity, inflation,
-                                           linear_log_convex_threshold);
-}
-
-void MinkowskiDiff::set(const ShapeBase* shape0, const ShapeBase* shape1) {
-  shapes[0] = shape0;
-  shapes[1] = shape1;
-  getNormalizeSupportDirectionFromShapes(shape0, shape1,
-                                         normalize_support_direction);
-
-  oR1.setIdentity();
-  ot1.setZero();
-
-  getSupportFunc = makeGetSupportFunction0(shape0, shape1, true, inflation,
-                                           linear_log_convex_threshold);
-}
 
 void GJK::initialize() {
-  nfree = 0;
-  status = Failed;
-  distance_upper_bound = (std::numeric_limits<FCL_REAL>::max)();
-  simplex = NULL;
+  distance_upper_bound = (std::numeric_limits<CoalScalar>::max)();
   gjk_variant = GJKVariant::DefaultGJK;
-  convergence_criterion = GJKConvergenceCriterion::VDB;
+  convergence_criterion = GJKConvergenceCriterion::Default;
   convergence_criterion_type = GJKConvergenceCriterionType::Relative;
+  reset(max_iterations, tolerance);
 }
 
-Vec3f GJK::getGuessFromSimplex() const { return ray; }
+void GJK::reset(size_t max_iterations_, CoalScalar tolerance_) {
+  max_iterations = max_iterations_;
+  tolerance = tolerance_;
+  COAL_ASSERT(tolerance_ > 0, "Tolerance must be positive.",
+              std::invalid_argument);
+  status = DidNotRun;
+  nfree = 0;
+  simplex = nullptr;
+  iterations = 0;
+  iterations_momentum_stop = 0;
+}
+
+Vec3s GJK::getGuessFromSimplex() const { return ray; }
 
 namespace details {
 
-bool getClosestPoints(const GJK::Simplex& simplex, Vec3f& w0, Vec3f& w1) {
+// This function computes the weights associated with projecting the origin
+// onto the final simplex of GJK or EPA.
+// The origin is always a convex combination of the supports of the simplex.
+// The weights are then linearly distributed among the shapes' supports, thanks
+// to the following property:
+//   if s is a support of the Minkowski difference, then:
+//   w = w.w0 - w.w1, with w.w0 a support of shape0 and w.w1 a support of
+//   shape1.
+// clang-format off
+// Suppose the final simplex is of rank 2:
+// We have 0 = alpha * w[0] + (1 - alpha) * w[1], with alpha the weight of the convex
+// decomposition, then:
+//    0 = alpha * (w[0].w0 - w[0].w1) + (1 - alpha) * (w[1].w0 - w[1].w1)
+// => 0 = alpha * w[0].w0 + (1 - alpha) * w[1].w0
+//      - alpha * w[0].w1 - (1 - alpha) * w[1].w1
+// Therefore we have two witness points:
+//   w0 = alpha * w[0].w0 + (1 - alpha) * w[1].w0
+//   w1 = alpha * w[0].w1 + (1 - alpha) * w[1].w1
+// clang-format on
+void getClosestPoints(const GJK::Simplex& simplex, Vec3s& w0, Vec3s& w1) {
   GJK::SimplexV* const* vs = simplex.vertex;
 
   for (GJK::vertex_id_t i = 0; i < simplex.rank; ++i) {
@@ -541,12 +102,12 @@ bool getClosestPoints(const GJK::Simplex& simplex, Vec3f& w0, Vec3f& w1) {
     case 1:
       w0 = vs[0]->w0;
       w1 = vs[0]->w1;
-      return true;
+      return;
     case 2: {
-      const Vec3f &a = vs[0]->w, a0 = vs[0]->w0, a1 = vs[0]->w1, b = vs[1]->w,
+      const Vec3s &a = vs[0]->w, a0 = vs[0]->w0, a1 = vs[0]->w1, b = vs[1]->w,
                   b0 = vs[1]->w0, b1 = vs[1]->w1;
-      FCL_REAL la, lb;
-      Vec3f N(b - a);
+      CoalScalar la, lb;
+      Vec3s N(b - a);
       la = N.dot(-a);
       if (la <= 0) {
         assert(false);
@@ -566,7 +127,7 @@ bool getClosestPoints(const GJK::Simplex& simplex, Vec3f& w0, Vec3f& w1) {
         }
       }
     }
-      return true;
+      return;
     case 3:
       // TODO avoid the reprojection
       projection = Project::projectTriangleOrigin(vs[0]->w, vs[1]->w, vs[2]->w);
@@ -576,7 +137,8 @@ bool getClosestPoints(const GJK::Simplex& simplex, Vec3f& w0, Vec3f& w1) {
                                                     vs[2]->w, vs[3]->w);
       break;
     default:
-      throw std::logic_error("The simplex rank must be in [ 1, 4 ]");
+      COAL_THROW_PRETTY("The simplex rank must be in [ 1, 4 ]",
+                        std::logic_error);
   }
   w0.setZero();
   w1.setZero();
@@ -584,49 +146,50 @@ bool getClosestPoints(const GJK::Simplex& simplex, Vec3f& w0, Vec3f& w1) {
     w0 += projection.parameterization[i] * vs[i]->w0;
     w1 += projection.parameterization[i] * vs[i]->w1;
   }
-  return true;
+  return;
 }
 
-/// Inflate the points
+/// Inflate the points along a normal.
+/// The normal is typically the normal of the separating plane found by GJK
+/// or the normal found by EPA.
+/// The normal should follow coal convention: it points from shape0 to
+/// shape1.
 template <bool Separated>
-void inflate(const MinkowskiDiff& shape, Vec3f& w0, Vec3f& w1) {
-  const Eigen::Array<FCL_REAL, 1, 2>& I(shape.inflation);
+void inflate(const MinkowskiDiff& shape, const Vec3s& normal, Vec3s& w0,
+             Vec3s& w1) {
+#ifndef NDEBUG
+  const CoalScalar dummy_precision =
+      Eigen::NumTraits<CoalScalar>::dummy_precision();
+  assert((normal.norm() - 1) < dummy_precision);
+#endif
+
+  const Eigen::Array<CoalScalar, 1, 2>& I(shape.swept_sphere_radius);
   Eigen::Array<bool, 1, 2> inflate(I > 0);
   if (!inflate.any()) return;
-  Vec3f w(w0 - w1);
-  FCL_REAL n2 = w.squaredNorm();
-  // TODO should be use a threshold (Eigen::NumTraits<FCL_REAL>::epsilon()) ?
-  if (n2 == 0.) {
-    if (inflate[0]) w0[0] += I[0] * (Separated ? -1 : 1);
-    if (inflate[1]) w1[0] += I[1] * (Separated ? 1 : -1);
-    return;
-  }
 
-  w /= std::sqrt(n2);
-  if (Separated) {
-    if (inflate[0]) w0 -= I[0] * w;
-    if (inflate[1]) w1 += I[1] * w;
-  } else {
-    if (inflate[0]) w0 += I[0] * w;
-    if (inflate[1]) w1 -= I[1] * w;
-  }
+  if (inflate[0]) w0 += I[0] * normal;
+  if (inflate[1]) w1 -= I[1] * normal;
 }
 
 }  // namespace details
 
-bool GJK::getClosestPoints(const MinkowskiDiff& shape, Vec3f& w0, Vec3f& w1) {
-  bool res = details::getClosestPoints(*simplex, w0, w1);
-  if (!res) return false;
-  details::inflate<true>(shape, w0, w1);
-  return true;
+void GJK::getWitnessPointsAndNormal(const MinkowskiDiff& shape, Vec3s& w0,
+                                    Vec3s& w1, Vec3s& normal) const {
+  details::getClosestPoints(*simplex, w0, w1);
+  if ((w1 - w0).norm() > Eigen::NumTraits<CoalScalar>::dummy_precision()) {
+    normal = (w1 - w0).normalized();
+  } else {
+    normal = -this->ray.normalized();
+  }
+  details::inflate<true>(shape, normal, w0, w1);
 }
 
-GJK::Status GJK::evaluate(const MinkowskiDiff& shape_, const Vec3f& guess,
+GJK::Status GJK::evaluate(const MinkowskiDiff& shape_, const Vec3s& guess,
                           const support_func_guess_t& supportHint) {
-  FCL_REAL alpha = 0;
+  CoalScalar alpha = 0;
   iterations = 0;
-  const FCL_REAL inflation = shape_.inflation.sum();
-  const FCL_REAL upper_bound = distance_upper_bound + inflation;
+  const CoalScalar swept_sphere_radius = shape_.swept_sphere_radius.sum();
+  const CoalScalar upper_bound = distance_upper_bound + swept_sphere_radius;
 
   free_v[0] = &store_v[0];
   free_v[1] = &store_v[1];
@@ -634,26 +197,26 @@ GJK::Status GJK::evaluate(const MinkowskiDiff& shape_, const Vec3f& guess,
   free_v[3] = &store_v[3];
 
   nfree = 4;
-  current = 0;
-  status = Valid;
+  status = NoCollision;
   shape = &shape_;
   distance = 0.0;
-  simplices[0].rank = 0;
+  current = 0;
+  simplices[current].rank = 0;
   support_hint = supportHint;
 
-  FCL_REAL rl = guess.norm();
+  CoalScalar rl = guess.norm();
   if (rl < tolerance) {
-    ray = Vec3f(-1, 0, 0);
+    ray = Vec3s(-1, 0, 0);
     rl = 1;
   } else
     ray = guess;
 
   // Momentum
   GJKVariant current_gjk_variant = gjk_variant;
-  Vec3f w = ray;
-  Vec3f dir = ray;
-  Vec3f y;
-  FCL_REAL momentum;
+  Vec3s w = ray;
+  Vec3s dir = ray;
+  Vec3s y;
+  CoalScalar momentum;
   bool normalize_support_direction = shape->normalize_support_direction;
   do {
     vertex_id_t next = (vertex_id_t)(1 - current);
@@ -661,16 +224,20 @@ GJK::Status GJK::evaluate(const MinkowskiDiff& shape_, const Vec3f& guess,
     Simplex& next_simplex = simplices[next];
 
     // check A: when origin is near the existing simplex, stop
-    // TODO this is an early stop which may cause the following issue.
-    // - EPA will not run correctly because it starts with a tetrahedron which
-    //   does not include the origin. Note that, at this stage, we do not know
-    //   whether a tetrahedron including the origin exists.
     if (rl < tolerance)  // mean origin is near the face of original simplex,
                          // return touch
     {
+      // At this point, GJK has converged but we don't know if GJK is enough to
+      // recover penetration information.
+      // EPA needs to be run.
+      // Unless the Minkowski difference is degenerated, EPA will run fine even
+      // if the final simplex of GJK is not a tetrahedron.
       assert(rl > 0);
-      status = Inside;
-      distance = -inflation;  // should we take rl into account ?
+      status = Collision;
+      // GJK is not enough to recover the penetration depth, hence we ignore the
+      // swept-sphere radius for now.
+      // EPA needs to be run to recover the penetration depth.
+      distance = rl;
       break;
     }
 
@@ -684,9 +251,10 @@ GJK::Status GJK::evaluate(const MinkowskiDiff& shape_, const Vec3f& guess,
         // Normalize heuristic for collision pairs involving convex but not
         // strictly-convex shapes This corresponds to most use cases.
         if (normalize_support_direction) {
-          momentum = (FCL_REAL(iterations) + 2) / (FCL_REAL(iterations) + 3);
+          momentum =
+              (CoalScalar(iterations) + 2) / (CoalScalar(iterations) + 3);
           y = momentum * ray + (1 - momentum) * w;
-          FCL_REAL y_norm = y.norm();
+          CoalScalar y_norm = y.norm();
           // ray is the point of the Minkowski difference which currently the
           // closest to the origin. Therefore, y.norm() > ray.norm() Hence, if
           // check A above has not stopped the algorithm, we necessarily have
@@ -694,58 +262,67 @@ GJK::Status GJK::evaluate(const MinkowskiDiff& shape_, const Vec3f& guess,
           assert(y_norm > tolerance);
           dir = momentum * dir / dir.norm() + (1 - momentum) * y / y_norm;
         } else {
-          momentum = (FCL_REAL(iterations) + 1) / (FCL_REAL(iterations) + 3);
+          momentum =
+              (CoalScalar(iterations) + 1) / (CoalScalar(iterations) + 3);
           y = momentum * ray + (1 - momentum) * w;
           dir = momentum * dir + (1 - momentum) * y;
         }
         break;
 
+      case PolyakAcceleration:
+        momentum = 1 / (CoalScalar(iterations) + 1);
+        dir = momentum * dir + (1 - momentum) * ray;
+        break;
+
       default:
-        throw std::logic_error("Invalid momentum variant.");
+        COAL_THROW_PRETTY("Invalid momentum variant.", std::logic_error);
     }
 
-    appendVertex(curr_simplex, -dir, false,
-                 support_hint);  // see below, ray points away from origin
+    // see below, ray points away from origin
+    appendVertex(curr_simplex, -dir, support_hint);
 
     // check removed (by ?): when the new support point is close to previous
     // support points, stop (as the new simplex is degenerated)
     w = curr_simplex.vertex[curr_simplex.rank - 1]->w;
 
     // check B: no collision if omega > 0
-    FCL_REAL omega = dir.dot(w) / dir.norm();
+    CoalScalar omega = dir.dot(w) / dir.norm();
     if (omega > upper_bound) {
-      distance = omega - inflation;
-      status = EarlyStopped;
+      distance = omega - swept_sphere_radius;
+      status = NoCollisionEarlyStopped;
       break;
     }
 
     // Check to remove acceleration
     if (current_gjk_variant != DefaultGJK) {
-      FCL_REAL frank_wolfe_duality_gap = 2 * ray.dot(ray - w);
+      CoalScalar frank_wolfe_duality_gap = 2 * ray.dot(ray - w);
       if (frank_wolfe_duality_gap - tolerance <= 0) {
         removeVertex(simplices[current]);
         current_gjk_variant = DefaultGJK;  // move back to classic GJK
-        continue;                          // continue to next iteration
+        iterations_momentum_stop = iterations;
+        continue;  // continue to next iteration
       }
     }
 
     // check C: when the new support point is close to the sub-simplex where the
     // ray point lies, stop (as the new simplex again is degenerated)
     bool cv_check_passed = checkConvergence(w, rl, alpha, omega);
-    // TODO here, we can stop at iteration 0 if this condition is met.
-    // We stopping at iteration 0, the closest point will not be valid.
-    // if(diff - tolerance * rl <= 0)
     if (iterations > 0 && cv_check_passed) {
       if (iterations > 0) removeVertex(simplices[current]);
       if (current_gjk_variant != DefaultGJK) {
         current_gjk_variant = DefaultGJK;  // move back to classic GJK
+        iterations_momentum_stop = iterations;
         continue;
       }
-      distance = rl - inflation;
-      // TODO When inflation is strictly positive, the distance may be exactly
-      // zero (so the ray is not zero) and we are not in the case rl <
-      // tolerance.
-      if (distance < tolerance) status = Inside;
+      // At this point, GJK has converged and we know that rl > tolerance (see
+      // check above). Therefore, penetration information can always be
+      // recovered without running EPA.
+      distance = rl - swept_sphere_radius;
+      if (distance < tolerance) {
+        status = CollisionWithPenetrationInformation;
+      } else {
+        status = NoCollision;
+      }
       break;
     }
 
@@ -770,128 +347,121 @@ GJK::Status GJK::evaluate(const MinkowskiDiff& shape_, const Vec3f& guess,
         inside = projectTetrahedraOrigin(curr_simplex, next_simplex);
         break;
       default:
-        throw std::logic_error("Invalid simplex rank");
+        COAL_THROW_PRETTY("Invalid simplex rank", std::logic_error);
     }
     assert(nfree + next_simplex.rank == 4);
     current = next;
-    if (!inside) rl = ray.norm();
+    rl = ray.norm();
     if (inside || rl == 0) {
-      status = Inside;
-      distance = -inflation - 1.;
+      status = Collision;
+      // GJK is not enough to recover the penetration depth, hence we ignore the
+      // swept-sphere radius for now.
+      // EPA needs to be run to recover the penetration depth.
+      distance = rl;
       break;
     }
 
     status = ((++iterations) < max_iterations) ? status : Failed;
 
-  } while (status == Valid);
+  } while (status == NoCollision);
 
   simplex = &simplices[current];
   assert(simplex->rank > 0 && simplex->rank < 5);
   return status;
 }
 
-bool GJK::checkConvergence(const Vec3f& w, const FCL_REAL& rl, FCL_REAL& alpha,
-                           const FCL_REAL& omega) {
-  FCL_REAL diff;
-  bool check_passed;
+bool GJK::checkConvergence(const Vec3s& w, const CoalScalar& rl,
+                           CoalScalar& alpha, const CoalScalar& omega) const {
   // x^* is the optimal solution (projection of origin onto the Minkowski
   // difference).
   //  x^k is the current iterate (x^k = `ray` in the code).
   // Each criterion provides a different guarantee on the distance to the
   // optimal solution.
   switch (convergence_criterion) {
-    case VDB:
+    case Default: {
       // alpha is the distance to the best separating hyperplane found so far
       alpha = std::max(alpha, omega);
       // ||x^*|| - ||x^k|| <= diff
-      diff = rl - alpha;
-      switch (convergence_criterion_type) {
-        case Absolute:
-          throw std::logic_error("VDB convergence criterion is relative.");
-          break;
-        case Relative:
-          check_passed = (diff - tolerance * rl) <= 0;
-          break;
-        default:
-          throw std::logic_error("Invalid convergence criterion type.");
-      }
-      break;
+      const CoalScalar diff = rl - alpha;
+      return ((diff - (tolerance + tolerance * rl)) <= 0);
+    } break;
 
-    case DualityGap:
+    case DualityGap: {
       // ||x^* - x^k||^2 <= diff
-      diff = 2 * ray.dot(ray - w);
+      const CoalScalar diff = 2 * ray.dot(ray - w);
       switch (convergence_criterion_type) {
         case Absolute:
-          check_passed = (diff - tolerance) <= 0;
+          return ((diff - tolerance) <= 0);
           break;
         case Relative:
-          check_passed = ((diff / tolerance * rl) - tolerance * rl) <= 0;
+          return (((diff / tolerance * rl) - tolerance * rl) <= 0);
           break;
         default:
-          throw std::logic_error("Invalid convergence criterion type.");
+          COAL_THROW_PRETTY("Invalid convergence criterion type.",
+                            std::logic_error);
       }
-      break;
+    } break;
 
-    case Hybrid:
+    case Hybrid: {
       // alpha is the distance to the best separating hyperplane found so far
       alpha = std::max(alpha, omega);
       // ||x^* - x^k||^2 <= diff
-      diff = rl * rl - alpha * alpha;
+      const CoalScalar diff = rl * rl - alpha * alpha;
       switch (convergence_criterion_type) {
         case Absolute:
-          check_passed = (diff - tolerance) <= 0;
+          return ((diff - tolerance) <= 0);
           break;
         case Relative:
-          check_passed = ((diff / tolerance * rl) - tolerance * rl) <= 0;
+          return (((diff / tolerance * rl) - tolerance * rl) <= 0);
           break;
         default:
-          throw std::logic_error("Invalid convergence criterion type.");
+          COAL_THROW_PRETTY("Invalid convergence criterion type.",
+                            std::logic_error);
       }
-      break;
+    } break;
 
     default:
-      throw std::logic_error("Invalid convergence criterion.");
+      COAL_THROW_PRETTY("Invalid convergence criterion.", std::logic_error);
   }
-  return check_passed;
 }
 
 inline void GJK::removeVertex(Simplex& simplex) {
   free_v[nfree++] = simplex.vertex[--simplex.rank];
 }
 
-inline void GJK::appendVertex(Simplex& simplex, const Vec3f& v,
-                              bool isNormalized, support_func_guess_t& hint) {
+inline void GJK::appendVertex(Simplex& simplex, const Vec3s& v,
+                              support_func_guess_t& hint) {
   simplex.vertex[simplex.rank] = free_v[--nfree];  // set the memory
-  getSupport(v, isNormalized, *simplex.vertex[simplex.rank++], hint);
+  getSupport(v, *simplex.vertex[simplex.rank++], hint);
 }
 
 bool GJK::encloseOrigin() {
-  Vec3f axis(Vec3f::Zero());
+  Vec3s axis(Vec3s::Zero());
   support_func_guess_t hint = support_func_guess_t::Zero();
   switch (simplex->rank) {
     case 1:
       for (int i = 0; i < 3; ++i) {
         axis[i] = 1;
-        appendVertex(*simplex, axis, true, hint);
+        appendVertex(*simplex, axis, hint);
         if (encloseOrigin()) return true;
         removeVertex(*simplex);
         axis[i] = -1;
-        appendVertex(*simplex, -axis, true, hint);
+        appendVertex(*simplex, -axis, hint);
         if (encloseOrigin()) return true;
         removeVertex(*simplex);
         axis[i] = 0;
       }
       break;
     case 2: {
-      Vec3f d = simplex->vertex[1]->w - simplex->vertex[0]->w;
+      Vec3s d = simplex->vertex[1]->w - simplex->vertex[0]->w;
       for (int i = 0; i < 3; ++i) {
         axis[i] = 1;
-        Vec3f p = d.cross(axis);
+        Vec3s p = d.cross(axis);
         if (!p.isZero()) {
-          appendVertex(*simplex, p, false, hint);
+          appendVertex(*simplex, p, hint);
           if (encloseOrigin()) return true;
           removeVertex(*simplex);
-          appendVertex(*simplex, -p, false, hint);
+          appendVertex(*simplex, -p, hint);
           if (encloseOrigin()) return true;
           removeVertex(*simplex);
         }
@@ -903,10 +473,10 @@ bool GJK::encloseOrigin() {
           (simplex->vertex[1]->w - simplex->vertex[0]->w)
               .cross(simplex->vertex[2]->w - simplex->vertex[0]->w);
       if (!axis.isZero()) {
-        appendVertex(*simplex, axis, false, hint);
+        appendVertex(*simplex, axis, hint);
         if (encloseOrigin()) return true;
         removeVertex(*simplex);
-        appendVertex(*simplex, -axis, false, hint);
+        appendVertex(*simplex, -axis, hint);
         if (encloseOrigin()) return true;
         removeVertex(*simplex);
       }
@@ -923,7 +493,7 @@ bool GJK::encloseOrigin() {
 }
 
 inline void originToPoint(const GJK::Simplex& current, GJK::vertex_id_t a,
-                          const Vec3f& A, GJK::Simplex& next, Vec3f& ray) {
+                          const Vec3s& A, GJK::Simplex& next, Vec3s& ray) {
   // A is the closest to the origin
   ray = A;
   next.vertex[0] = current.vertex[a];
@@ -931,9 +501,9 @@ inline void originToPoint(const GJK::Simplex& current, GJK::vertex_id_t a,
 }
 
 inline void originToSegment(const GJK::Simplex& current, GJK::vertex_id_t a,
-                            GJK::vertex_id_t b, const Vec3f& A, const Vec3f& B,
-                            const Vec3f& AB, const FCL_REAL& ABdotAO,
-                            GJK::Simplex& next, Vec3f& ray) {
+                            GJK::vertex_id_t b, const Vec3s& A, const Vec3s& B,
+                            const Vec3s& AB, const CoalScalar& ABdotAO,
+                            GJK::Simplex& next, Vec3s& ray) {
   // ray = - ( AB ^ AO ) ^ AB = (AB.B) A + (-AB.A) B
   ray = AB.dot(B) * A + ABdotAO * B;
 
@@ -947,8 +517,8 @@ inline void originToSegment(const GJK::Simplex& current, GJK::vertex_id_t a,
 
 inline bool originToTriangle(const GJK::Simplex& current, GJK::vertex_id_t a,
                              GJK::vertex_id_t b, GJK::vertex_id_t c,
-                             const Vec3f& ABC, const FCL_REAL& ABCdotAO,
-                             GJK::Simplex& next, Vec3f& ray) {
+                             const Vec3s& ABC, const CoalScalar& ABCdotAO,
+                             GJK::Simplex& next, Vec3s& ray) {
   next.rank = 3;
   next.vertex[2] = current.vertex[a];
 
@@ -974,11 +544,11 @@ inline bool originToTriangle(const GJK::Simplex& current, GJK::vertex_id_t a,
 bool GJK::projectLineOrigin(const Simplex& current, Simplex& next) {
   const vertex_id_t a = 1, b = 0;
   // A is the last point we added.
-  const Vec3f& A = current.vertex[a]->w;
-  const Vec3f& B = current.vertex[b]->w;
+  const Vec3s& A = current.vertex[a]->w;
+  const Vec3s& B = current.vertex[b]->w;
 
-  const Vec3f AB = B - A;
-  const FCL_REAL d = AB.dot(-A);
+  const Vec3s AB = B - A;
+  const CoalScalar d = AB.dot(-A);
   assert(d <= AB.squaredNorm());
 
   if (d == 0) {
@@ -1002,19 +572,19 @@ bool GJK::projectLineOrigin(const Simplex& current, Simplex& next) {
 bool GJK::projectTriangleOrigin(const Simplex& current, Simplex& next) {
   const vertex_id_t a = 2, b = 1, c = 0;
   // A is the last point we added.
-  const Vec3f &A = current.vertex[a]->w, B = current.vertex[b]->w,
+  const Vec3s &A = current.vertex[a]->w, B = current.vertex[b]->w,
               C = current.vertex[c]->w;
 
-  const Vec3f AB = B - A, AC = C - A, ABC = AB.cross(AC);
+  const Vec3s AB = B - A, AC = C - A, ABC = AB.cross(AC);
 
-  FCL_REAL edgeAC2o = ABC.cross(AC).dot(-A);
+  CoalScalar edgeAC2o = ABC.cross(AC).dot(-A);
   if (edgeAC2o >= 0) {
-    FCL_REAL towardsC = AC.dot(-A);
+    CoalScalar towardsC = AC.dot(-A);
     if (towardsC >= 0) {  // Region 1
       originToSegment(current, a, c, A, C, AC, towardsC, next, ray);
       free_v[nfree++] = current.vertex[b];
     } else {  // Region 4 or 5
-      FCL_REAL towardsB = AB.dot(-A);
+      CoalScalar towardsB = AB.dot(-A);
       if (towardsB < 0) {  // Region 5
         // A is the closest to the origin
         originToPoint(current, a, A, next, ray);
@@ -1024,9 +594,9 @@ bool GJK::projectTriangleOrigin(const Simplex& current, Simplex& next) {
       free_v[nfree++] = current.vertex[c];
     }
   } else {
-    FCL_REAL edgeAB2o = AB.cross(ABC).dot(-A);
+    CoalScalar edgeAB2o = AB.cross(ABC).dot(-A);
     if (edgeAB2o >= 0) {  // Region 4 or 5
-      FCL_REAL towardsB = AB.dot(-A);
+      CoalScalar towardsB = AB.dot(-A);
       if (towardsB < 0) {  // Region 5
         // A is the closest to the origin
         originToPoint(current, a, A, next, ray);
@@ -1044,34 +614,35 @@ bool GJK::projectTriangleOrigin(const Simplex& current, Simplex& next) {
 bool GJK::projectTetrahedraOrigin(const Simplex& current, Simplex& next) {
   // The code of this function was generated using doc/gjk.py
   const vertex_id_t a = 3, b = 2, c = 1, d = 0;
-  const Vec3f& A(current.vertex[a]->w);
-  const Vec3f& B(current.vertex[b]->w);
-  const Vec3f& C(current.vertex[c]->w);
-  const Vec3f& D(current.vertex[d]->w);
-  const FCL_REAL aa = A.squaredNorm();
-  const FCL_REAL da = D.dot(A);
-  const FCL_REAL db = D.dot(B);
-  const FCL_REAL dc = D.dot(C);
-  const FCL_REAL dd = D.dot(D);
-  const FCL_REAL da_aa = da - aa;
-  const FCL_REAL ca = C.dot(A);
-  const FCL_REAL cb = C.dot(B);
-  const FCL_REAL cc = C.dot(C);
-  const FCL_REAL& cd = dc;
-  const FCL_REAL ca_aa = ca - aa;
-  const FCL_REAL ba = B.dot(A);
-  const FCL_REAL bb = B.dot(B);
-  const FCL_REAL& bc = cb;
-  const FCL_REAL& bd = db;
-  const FCL_REAL ba_aa = ba - aa;
-  const FCL_REAL ba_ca = ba - ca;
-  const FCL_REAL ca_da = ca - da;
-  const FCL_REAL da_ba = da - ba;
-  const Vec3f a_cross_b = A.cross(B);
-  const Vec3f a_cross_c = A.cross(C);
+  const Vec3s& A(current.vertex[a]->w);
+  const Vec3s& B(current.vertex[b]->w);
+  const Vec3s& C(current.vertex[c]->w);
+  const Vec3s& D(current.vertex[d]->w);
+  const CoalScalar aa = A.squaredNorm();
+  const CoalScalar da = D.dot(A);
+  const CoalScalar db = D.dot(B);
+  const CoalScalar dc = D.dot(C);
+  const CoalScalar dd = D.dot(D);
+  const CoalScalar da_aa = da - aa;
+  const CoalScalar ca = C.dot(A);
+  const CoalScalar cb = C.dot(B);
+  const CoalScalar cc = C.dot(C);
+  const CoalScalar& cd = dc;
+  const CoalScalar ca_aa = ca - aa;
+  const CoalScalar ba = B.dot(A);
+  const CoalScalar bb = B.dot(B);
+  const CoalScalar& bc = cb;
+  const CoalScalar& bd = db;
+  const CoalScalar ba_aa = ba - aa;
+  const CoalScalar ba_ca = ba - ca;
+  const CoalScalar ca_da = ca - da;
+  const CoalScalar da_ba = da - ba;
+  const Vec3s a_cross_b = A.cross(B);
+  const Vec3s a_cross_c = A.cross(C);
 
-  const FCL_REAL dummy_precision = Eigen::NumTraits<FCL_REAL>::epsilon();
-  HPP_FCL_UNUSED_VARIABLE(dummy_precision);
+  const CoalScalar dummy_precision(
+      3 * std::sqrt(std::numeric_limits<CoalScalar>::epsilon()));
+  COAL_UNUSED_VARIABLE(dummy_precision);
 
 #define REGION_INSIDE()               \
   ray.setZero();                      \
@@ -1082,6 +653,7 @@ bool GJK::projectTetrahedraOrigin(const Simplex& current, Simplex& next) {
   next.rank = 4;                      \
   return true;
 
+  // clang-format off
   if (ba_aa <= 0) {                // if AB.AO >= 0 / a10
     if (-D.dot(a_cross_b) <= 0) {  // if ADB.AO >= 0 / a10.a3
       if (ba * da_ba + bd * ba_aa - bb * da_aa <=
@@ -1100,7 +672,7 @@ bool GJK::projectTetrahedraOrigin(const Simplex& current, Simplex& next) {
             originToSegment(current, a, b, A, B, B - A, -ba_aa, next, ray);
             free_v[nfree++] = current.vertex[c];
             free_v[nfree++] = current.vertex[d];
-          }       // end of (ABC ^ AB).AO >= 0
+          }  // end of (ABC ^ AB).AO >= 0
         } else {  // not AD.AO >= 0 / a10.a3.a9.!a12
           if (ba * ba_ca + bb * ca_aa - bc * ba_aa <=
               0) {  // if (ABC ^ AB).AO >= 0 / a10.a3.a9.!a12.a4
@@ -1117,20 +689,20 @@ bool GJK::projectTetrahedraOrigin(const Simplex& current, Simplex& next) {
                 originToSegment(current, a, c, A, C, C - A, -ca_aa, next, ray);
                 free_v[nfree++] = current.vertex[b];
                 free_v[nfree++] = current.vertex[d];
-              }       // end of (ACD ^ AC).AO >= 0
+              }  // end of (ACD ^ AC).AO >= 0
             } else {  // not (ABC ^ AC).AO >= 0 / a10.a3.a9.!a12.a4.!a5
               // Region ABC
               originToTriangle(current, a, b, c, (B - A).cross(C - A),
                                -C.dot(a_cross_b), next, ray);
               free_v[nfree++] = current.vertex[d];
-            }       // end of (ABC ^ AC).AO >= 0
+            }  // end of (ABC ^ AC).AO >= 0
           } else {  // not (ABC ^ AB).AO >= 0 / a10.a3.a9.!a12.!a4
             // Region AB
             originToSegment(current, a, b, A, B, B - A, -ba_aa, next, ray);
             free_v[nfree++] = current.vertex[c];
             free_v[nfree++] = current.vertex[d];
-          }     // end of (ABC ^ AB).AO >= 0
-        }       // end of AD.AO >= 0
+          }  // end of (ABC ^ AB).AO >= 0
+        }  // end of AD.AO >= 0
       } else {  // not (ADB ^ AB).AO >= 0 / a10.a3.!a9
         if (da * da_ba + dd * ba_aa - db * da_aa <=
             0) {  // if (ADB ^ AD).AO >= 0 / a10.a3.!a9.a8
@@ -1152,7 +724,7 @@ bool GJK::projectTetrahedraOrigin(const Simplex& current, Simplex& next) {
               originToTriangle(current, a, c, d, (C - A).cross(D - A),
                                -D.dot(a_cross_c), next, ray);
               free_v[nfree++] = current.vertex[b];
-            }       // end of (ACD ^ AD).AO >= 0
+            }  // end of (ACD ^ AD).AO >= 0
           } else {  // not (ACD ^ AC).AO >= 0 / a10.a3.!a9.!a8.!a6
             if (da * ca_da + dc * da_aa - dd * ca_aa <=
                 0) {  // if (ACD ^ AD).AO >= 0 / a10.a3.!a9.!a8.!a6.a7
@@ -1165,10 +737,10 @@ bool GJK::projectTetrahedraOrigin(const Simplex& current, Simplex& next) {
               originToSegment(current, a, c, A, C, C - A, -ca_aa, next, ray);
               free_v[nfree++] = current.vertex[b];
               free_v[nfree++] = current.vertex[d];
-            }                       // end of (ACD ^ AD).AO >= 0
-          }                         // end of (ACD ^ AC).AO >= 0
-        }                           // end of (ADB ^ AD).AO >= 0
-      }                             // end of (ADB ^ AB).AO >= 0
+            }  // end of (ACD ^ AD).AO >= 0
+          }  // end of (ACD ^ AC).AO >= 0
+        }  // end of (ADB ^ AD).AO >= 0
+      }  // end of (ADB ^ AB).AO >= 0
     } else {                        // not ADB.AO >= 0 / a10.!a3
       if (C.dot(a_cross_b) <= 0) {  // if ABC.AO >= 0 / a10.!a3.a1
         if (ba * ba_ca + bb * ca_aa - bc * ba_aa <=
@@ -1186,19 +758,19 @@ bool GJK::projectTetrahedraOrigin(const Simplex& current, Simplex& next) {
               originToSegment(current, a, c, A, C, C - A, -ca_aa, next, ray);
               free_v[nfree++] = current.vertex[b];
               free_v[nfree++] = current.vertex[d];
-            }       // end of (ACD ^ AC).AO >= 0
+            }  // end of (ACD ^ AC).AO >= 0
           } else {  // not (ABC ^ AC).AO >= 0 / a10.!a3.a1.a4.!a5
             // Region ABC
             originToTriangle(current, a, b, c, (B - A).cross(C - A),
                              -C.dot(a_cross_b), next, ray);
             free_v[nfree++] = current.vertex[d];
-          }       // end of (ABC ^ AC).AO >= 0
+          }  // end of (ABC ^ AC).AO >= 0
         } else {  // not (ABC ^ AB).AO >= 0 / a10.!a3.a1.!a4
           // Region AB
           originToSegment(current, a, b, A, B, B - A, -ba_aa, next, ray);
           free_v[nfree++] = current.vertex[c];
           free_v[nfree++] = current.vertex[d];
-        }                             // end of (ABC ^ AB).AO >= 0
+        }  // end of (ABC ^ AB).AO >= 0
       } else {                        // not ABC.AO >= 0 / a10.!a3.!a1
         if (D.dot(a_cross_c) <= 0) {  // if ACD.AO >= 0 / a10.!a3.!a1.a2
           if (ca * ca_da + cc * da_aa - cd * ca_aa <=
@@ -1214,7 +786,7 @@ bool GJK::projectTetrahedraOrigin(const Simplex& current, Simplex& next) {
               originToTriangle(current, a, c, d, (C - A).cross(D - A),
                                -D.dot(a_cross_c), next, ray);
               free_v[nfree++] = current.vertex[b];
-            }                  // end of (ACD ^ AD).AO >= 0
+            }  // end of (ACD ^ AD).AO >= 0
           } else {             // not (ACD ^ AC).AO >= 0 / a10.!a3.!a1.a2.!a6
             if (ca_aa <= 0) {  // if AC.AO >= 0 / a10.!a3.!a1.a2.!a6.a11
               // Region AC
@@ -1226,14 +798,14 @@ bool GJK::projectTetrahedraOrigin(const Simplex& current, Simplex& next) {
               originToSegment(current, a, d, A, D, D - A, -da_aa, next, ray);
               free_v[nfree++] = current.vertex[b];
               free_v[nfree++] = current.vertex[c];
-            }     // end of AC.AO >= 0
-          }       // end of (ACD ^ AC).AO >= 0
+            }  // end of AC.AO >= 0
+          }  // end of (ACD ^ AC).AO >= 0
         } else {  // not ACD.AO >= 0 / a10.!a3.!a1.!a2
           // Region Inside
           REGION_INSIDE()
-        }                           // end of ACD.AO >= 0
-      }                             // end of ABC.AO >= 0
-    }                               // end of ADB.AO >= 0
+        }  // end of ACD.AO >= 0
+      }  // end of ABC.AO >= 0
+    }  // end of ADB.AO >= 0
   } else {                          // not AB.AO >= 0 / !a10
     if (ca_aa <= 0) {               // if AC.AO >= 0 / !a10.a11
       if (D.dot(a_cross_c) <= 0) {  // if ACD.AO >= 0 / !a10.a11.a2
@@ -1253,17 +825,17 @@ bool GJK::projectTetrahedraOrigin(const Simplex& current, Simplex& next) {
                 originToSegment(current, a, d, A, D, D - A, -da_aa, next, ray);
                 free_v[nfree++] = current.vertex[b];
                 free_v[nfree++] = current.vertex[c];
-              }       // end of (ADB ^ AD).AO >= 0
+              }  // end of (ADB ^ AD).AO >= 0
             } else {  // not (ACD ^ AD).AO >= 0 / !a10.a11.a2.a12.a6.!a7
               // Region ACD
               originToTriangle(current, a, c, d, (C - A).cross(D - A),
                                -D.dot(a_cross_c), next, ray);
               free_v[nfree++] = current.vertex[b];
-            }       // end of (ACD ^ AD).AO >= 0
+            }  // end of (ACD ^ AD).AO >= 0
           } else {  // not (ACD ^ AC).AO >= 0 / !a10.a11.a2.a12.!a6
             assert(!(da * ca_da + dc * da_aa - dd * ca_aa <=
-                     dummy_precision));  // Not (ACD ^ AD).AO >= 0 /
-                                         // !a10.a11.a2.a12.!a6.!a7
+                     -dummy_precision));  // Not (ACD ^ AD).AO >= 0 /
+                                          // !a10.a11.a2.a12.!a6.!a7
             if (ca * ba_ca + cb * ca_aa - cc * ba_aa <=
                 0) {  // if (ABC ^ AC).AO >= 0 / !a10.a11.a2.a12.!a6.!a7.a5
               // Region AC
@@ -1275,8 +847,8 @@ bool GJK::projectTetrahedraOrigin(const Simplex& current, Simplex& next) {
               originToTriangle(current, a, b, c, (B - A).cross(C - A),
                                -C.dot(a_cross_b), next, ray);
               free_v[nfree++] = current.vertex[d];
-            }     // end of (ABC ^ AC).AO >= 0
-          }       // end of (ACD ^ AC).AO >= 0
+            }  // end of (ABC ^ AC).AO >= 0
+          }  // end of (ACD ^ AC).AO >= 0
         } else {  // not AD.AO >= 0 / !a10.a11.a2.!a12
           if (ca * ba_ca + cb * ca_aa - cc * ba_aa <=
               0) {  // if (ABC ^ AC).AO >= 0 / !a10.a11.a2.!a12.a5
@@ -1294,7 +866,7 @@ bool GJK::projectTetrahedraOrigin(const Simplex& current, Simplex& next) {
               originToSegment(current, a, c, A, C, C - A, -ca_aa, next, ray);
               free_v[nfree++] = current.vertex[b];
               free_v[nfree++] = current.vertex[d];
-            }       // end of (ACD ^ AC).AO >= 0
+            }  // end of (ACD ^ AC).AO >= 0
           } else {  // not (ABC ^ AC).AO >= 0 / !a10.a11.a2.!a12.!a5
             if (C.dot(a_cross_b) <=
                 0) {  // if ABC.AO >= 0 / !a10.a11.a2.!a12.!a5.a1
@@ -1313,9 +885,9 @@ bool GJK::projectTetrahedraOrigin(const Simplex& current, Simplex& next) {
               originToTriangle(current, a, c, d, (C - A).cross(D - A),
                                -D.dot(a_cross_c), next, ray);
               free_v[nfree++] = current.vertex[b];
-            }                         // end of ABC.AO >= 0
-          }                           // end of (ABC ^ AC).AO >= 0
-        }                             // end of AD.AO >= 0
+            }  // end of ABC.AO >= 0
+          }  // end of (ABC ^ AC).AO >= 0
+        }  // end of AD.AO >= 0
       } else {                        // not ACD.AO >= 0 / !a10.a11.!a2
         if (C.dot(a_cross_b) <= 0) {  // if ABC.AO >= 0 / !a10.a11.!a2.a1
           if (ca * ba_ca + cb * ca_aa - cc * ba_aa <=
@@ -1332,7 +904,7 @@ bool GJK::projectTetrahedraOrigin(const Simplex& current, Simplex& next) {
             originToTriangle(current, a, b, c, (B - A).cross(C - A),
                              -C.dot(a_cross_b), next, ray);
             free_v[nfree++] = current.vertex[d];
-          }                              // end of (ABC ^ AC).AO >= 0
+          }  // end of (ABC ^ AC).AO >= 0
         } else {                         // not ABC.AO >= 0 / !a10.a11.!a2.!a1
           if (-D.dot(a_cross_b) <= 0) {  // if ADB.AO >= 0 / !a10.a11.!a2.!a1.a3
             if (da * da_ba + dd * ba_aa - db * da_aa <=
@@ -1346,13 +918,13 @@ bool GJK::projectTetrahedraOrigin(const Simplex& current, Simplex& next) {
               originToSegment(current, a, d, A, D, D - A, -da_aa, next, ray);
               free_v[nfree++] = current.vertex[b];
               free_v[nfree++] = current.vertex[c];
-            }       // end of (ADB ^ AD).AO >= 0
+            }  // end of (ADB ^ AD).AO >= 0
           } else {  // not ADB.AO >= 0 / !a10.a11.!a2.!a1.!a3
             // Region Inside
             REGION_INSIDE()
-          }                            // end of ADB.AO >= 0
-        }                              // end of ABC.AO >= 0
-      }                                // end of ACD.AO >= 0
+          }  // end of ADB.AO >= 0
+        }  // end of ABC.AO >= 0
+      }  // end of ACD.AO >= 0
     } else {                           // not AC.AO >= 0 / !a10.!a11
       if (da_aa <= 0) {                // if AD.AO >= 0 / !a10.!a11.a12
         if (-D.dot(a_cross_b) <= 0) {  // if ADB.AO >= 0 / !a10.!a11.a12.a3
@@ -1372,7 +944,7 @@ bool GJK::projectTetrahedraOrigin(const Simplex& current, Simplex& next) {
               originToSegment(current, a, d, A, D, D - A, -da_aa, next, ray);
               free_v[nfree++] = current.vertex[b];
               free_v[nfree++] = current.vertex[c];
-            }       // end of (ADB ^ AD).AO >= 0
+            }  // end of (ADB ^ AD).AO >= 0
           } else {  // not (ACD ^ AD).AO >= 0 / !a10.!a11.a12.a3.!a7
             if (D.dot(a_cross_c) <=
                 0) {  // if ACD.AO >= 0 / !a10.!a11.a12.a3.!a7.a2
@@ -1398,9 +970,9 @@ bool GJK::projectTetrahedraOrigin(const Simplex& current, Simplex& next) {
                 originToTriangle(current, a, d, b, (D - A).cross(B - A),
                                  D.dot(a_cross_b), next, ray);
                 free_v[nfree++] = current.vertex[c];
-              }                         // end of ABC.AO >= 0
-            }                           // end of ACD.AO >= 0
-          }                             // end of (ACD ^ AD).AO >= 0
+              }  // end of ABC.AO >= 0
+            }  // end of ACD.AO >= 0
+          }  // end of (ACD ^ AD).AO >= 0
         } else {                        // not ADB.AO >= 0 / !a10.!a11.a12.!a3
           if (D.dot(a_cross_c) <= 0) {  // if ACD.AO >= 0 / !a10.!a11.a12.!a3.a2
             if (da * ca_da + dc * da_aa - dd * ca_aa <=
@@ -1417,12 +989,12 @@ bool GJK::projectTetrahedraOrigin(const Simplex& current, Simplex& next) {
               originToTriangle(current, a, c, d, (C - A).cross(D - A),
                                -D.dot(a_cross_c), next, ray);
               free_v[nfree++] = current.vertex[b];
-            }       // end of (ACD ^ AD).AO >= 0
+            }  // end of (ACD ^ AD).AO >= 0
           } else {  // not ACD.AO >= 0 / !a10.!a11.a12.!a3.!a2
             // Region Inside
             REGION_INSIDE()
-          }     // end of ACD.AO >= 0
-        }       // end of ADB.AO >= 0
+          }  // end of ACD.AO >= 0
+        }  // end of ADB.AO >= 0
       } else {  // not AD.AO >= 0 / !a10.!a11.!a12
         // Region A
         originToPoint(current, a, A, next, ray);
@@ -1430,45 +1002,62 @@ bool GJK::projectTetrahedraOrigin(const Simplex& current, Simplex& next) {
         free_v[nfree++] = current.vertex[c];
         free_v[nfree++] = current.vertex[d];
       }  // end of AD.AO >= 0
-    }    // end of AC.AO >= 0
-  }      // end of AB.AO >= 0
+    }  // end of AC.AO >= 0
+  }  // end of AB.AO >= 0
+  // clang-format on
 
 #undef REGION_INSIDE
   return false;
 }
 
-void EPA::initialize() {
-  sv_store = new SimplexV[max_vertex_num];
-  fc_store = new SimplexF[max_face_num];
-  status = Failed;
-  normal = Vec3f(0, 0, 0);
+void EPA::initialize() { reset(max_iterations, tolerance); }
+
+void EPA::reset(size_t max_iterations_, CoalScalar tolerance_) {
+  max_iterations = max_iterations_;
+  tolerance = tolerance_;
+  // EPA creates only 2 faces and 1 vertex per iteration.
+  // (+ the 4 (or 8 in the future) faces at the beginning
+  //  + the 4 vertices (or 6 in the future) at the beginning)
+  sv_store.resize(max_iterations + 4);
+  fc_store.resize(2 * max_iterations + 4);
+  status = DidNotRun;
+  normal.setZero();
+  support_hint.setZero();
   depth = 0;
-  nextsv = 0;
-  for (size_t i = 0; i < max_face_num; ++i)
-    stock.append(&fc_store[max_face_num - i - 1]);
+  closest_face = nullptr;
+  result.reset();
+  hull.reset();
+  num_vertices = 0;
+  stock.reset();
+  // The stock is initialized with the faces in reverse order so that the
+  // hull and the stock do not overlap (the stock will shring as the hull will
+  // grow).
+  for (size_t i = 0; i < fc_store.size(); ++i)
+    stock.append(&fc_store[fc_store.size() - i - 1]);
+  iterations = 0;
 }
 
-bool EPA::getEdgeDist(SimplexF* face, SimplexV* a, SimplexV* b,
-                      FCL_REAL& dist) {
-  Vec3f ab = b->w - a->w;
-  Vec3f n_ab = ab.cross(face->n);
-  FCL_REAL a_dot_nab = a->w.dot(n_ab);
+bool EPA::getEdgeDist(SimplexFace* face, const SimplexVertex& a,
+                      const SimplexVertex& b, CoalScalar& dist) {
+  Vec3s ab = b.w - a.w;
+  Vec3s n_ab = ab.cross(face->n);
+  CoalScalar a_dot_nab = a.w.dot(n_ab);
 
   if (a_dot_nab < 0)  // the origin is on the outside part of ab
   {
     // following is similar to projectOrigin for two points
     // however, as we dont need to compute the parameterization, dont need to
     // compute 0 or 1
-    FCL_REAL a_dot_ab = a->w.dot(ab);
-    FCL_REAL b_dot_ab = b->w.dot(ab);
+    CoalScalar a_dot_ab = a.w.dot(ab);
+    CoalScalar b_dot_ab = b.w.dot(ab);
 
     if (a_dot_ab > 0)
-      dist = a->w.norm();
+      dist = a.w.norm();
     else if (b_dot_ab < 0)
-      dist = b->w.norm();
+      dist = b.w.norm();
     else {
       dist = std::sqrt(std::max(
-          a->w.squaredNorm() - a_dot_ab * a_dot_ab / ab.squaredNorm(), 0.));
+          a.w.squaredNorm() - a_dot_ab * a_dot_ab / ab.squaredNorm(), 0.));
     }
 
     return true;
@@ -1477,29 +1066,62 @@ bool EPA::getEdgeDist(SimplexF* face, SimplexV* a, SimplexV* b,
   return false;
 }
 
-EPA::SimplexF* EPA::newFace(SimplexV* a, SimplexV* b, SimplexV* c,
-                            bool forced) {
-  if (stock.root) {
-    SimplexF* face = stock.root;
+EPA::SimplexFace* EPA::newFace(size_t id_a, size_t id_b, size_t id_c,
+                               bool force) {
+  if (stock.root != nullptr) {
+    SimplexFace* face = stock.root;
     stock.remove(face);
     hull.append(face);
     face->pass = 0;
-    face->vertex[0] = a;
-    face->vertex[1] = b;
-    face->vertex[2] = c;
-    face->n = (b->w - a->w).cross(c->w - a->w);
-    FCL_REAL l = face->n.norm();
+    face->vertex_id[0] = id_a;
+    face->vertex_id[1] = id_b;
+    face->vertex_id[2] = id_c;
+    const SimplexVertex& a = sv_store[id_a];
+    const SimplexVertex& b = sv_store[id_b];
+    const SimplexVertex& c = sv_store[id_c];
+    face->n = (b.w - a.w).cross(c.w - a.w);
 
-    if (l > Eigen::NumTraits<FCL_REAL>::epsilon()) {
-      face->n /= l;
+    if (face->n.norm() > Eigen::NumTraits<CoalScalar>::epsilon()) {
+      face->n.normalize();
 
-      if (!(getEdgeDist(face, a, b, face->d) ||
-            getEdgeDist(face, b, c, face->d) ||
-            getEdgeDist(face, c, a, face->d))) {
-        face->d = a->w.dot(face->n);
+      // If the origin projects outside the face, skip it in the
+      // `findClosestFace` method.
+      // The origin always projects inside the closest face.
+      CoalScalar a_dot_nab = a.w.dot((b.w - a.w).cross(face->n));
+      CoalScalar b_dot_nbc = b.w.dot((c.w - b.w).cross(face->n));
+      CoalScalar c_dot_nca = c.w.dot((a.w - c.w).cross(face->n));
+      if (a_dot_nab >= -tolerance &&  //
+          b_dot_nbc >= -tolerance &&  //
+          c_dot_nca >= -tolerance) {
+        face->d = a.w.dot(face->n);
+        face->ignore = false;
+      } else {
+        // We will never check this face, so we don't care about
+        // its true distance to the origin.
+        face->d = std::numeric_limits<CoalScalar>::max();
+        face->ignore = true;
       }
 
-      if (forced || face->d >= -tolerance)
+      // For the initialization of EPA, we need to force the addition of the
+      // face. This is because the origin can lie outside the initial
+      // tetrahedron. This is expected. GJK can converge in two different ways:
+      // either by enclosing the origin with a simplex, or by converging
+      // sufficiently close to the origin.
+      // The thing is, "sufficiently close to the origin" depends on the
+      // tolerance of GJK. So in this case, GJK **cannot** guarantee that the
+      // shapes are indeed in collision. If it turns out they are not in
+      // collision, the origin will lie outside of the Minkowski difference and
+      // thus outside the initial tetrahedron. But EPA is ultimately a
+      // projection algorithm, so it will work fine!
+      //
+      // Actually, the `NonConvex` status is badly named. There should not be
+      // such a status! Again, if the origin lies outside the Minkowski
+      // difference, EPA will work fine, and will find the right (signed)
+      // distance between the shapes as well as the right normal. This is a
+      // very nice mathematical property, making GJK + EPA a **very** robust set
+      // of algorithms. :)
+      // TODO(louis): remove the `NonConvex` status.
+      if (face->d >= -tolerance || force)
         return face;
       else
         status = NonConvex;
@@ -1508,61 +1130,71 @@ EPA::SimplexF* EPA::newFace(SimplexV* a, SimplexV* b, SimplexV* c,
 
     hull.remove(face);
     stock.append(face);
-    return NULL;
+    return nullptr;
   }
 
-  status = stock.root ? OutOfVertices : OutOfFaces;
-  return NULL;
+  assert(hull.count >= fc_store.size() && "EPA: should not be out of faces.");
+  status = OutOfFaces;
+  return nullptr;
 }
 
 /** @brief Find the best polytope face to split */
-EPA::SimplexF* EPA::findBest() {
-  SimplexF* minf = hull.root;
-  FCL_REAL mind = minf->d * minf->d;
-  for (SimplexF* f = minf->l[1]; f; f = f->l[1]) {
-    FCL_REAL sqd = f->d * f->d;
+EPA::SimplexFace* EPA::findClosestFace() {
+  SimplexFace* minf = hull.root;
+  CoalScalar mind = std::numeric_limits<CoalScalar>::max();
+  for (SimplexFace* f = minf; f; f = f->next_face) {
+    if (f->ignore) continue;
+    CoalScalar sqd = f->d * f->d;
     if (sqd < mind) {
       minf = f;
       mind = sqd;
     }
   }
+  assert(minf && !(minf->ignore) && "EPA: minf should not be flagged ignored.");
   return minf;
 }
 
-EPA::Status EPA::evaluate(GJK& gjk, const Vec3f& guess) {
+EPA::Status EPA::evaluate(GJK& gjk, const Vec3s& guess) {
   GJK::Simplex& simplex = *gjk.getSimplex();
-  support_func_guess_t hint(gjk.support_hint);
-  if ((simplex.rank > 1) && gjk.encloseOrigin()) {
+  support_hint = gjk.support_hint;
+
+  // TODO(louis): we might want to start with a hexahedron if the
+  // simplex given by GJK is of rank <= 3.
+  bool enclosed_origin = gjk.encloseOrigin();
+  if ((simplex.rank > 1) && enclosed_origin) {
+    assert(simplex.rank == 4 &&
+           "When starting EPA, simplex should be of rank 4.");
     while (hull.root) {
-      SimplexF* f = hull.root;
+      SimplexFace* f = hull.root;
       hull.remove(f);
       stock.append(f);
     }
+    assert(hull.count == 0);
+    assert(stock.count == fc_store.size());
 
     status = Valid;
-    nextsv = 0;
+    num_vertices = 0;
 
+    // Make sure the tetrahedron has its normals pointing outside.
     if ((simplex.vertex[0]->w - simplex.vertex[3]->w)
             .dot((simplex.vertex[1]->w - simplex.vertex[3]->w)
                      .cross(simplex.vertex[2]->w - simplex.vertex[3]->w)) < 0) {
-      SimplexV* tmp = simplex.vertex[0];
+      SimplexVertex* tmp = simplex.vertex[0];
       simplex.vertex[0] = simplex.vertex[1];
       simplex.vertex[1] = tmp;
     }
 
-    SimplexF* tetrahedron[] = {
-        newFace(simplex.vertex[0], simplex.vertex[1], simplex.vertex[2], true),
-        newFace(simplex.vertex[1], simplex.vertex[0], simplex.vertex[3], true),
-        newFace(simplex.vertex[2], simplex.vertex[1], simplex.vertex[3], true),
-        newFace(simplex.vertex[0], simplex.vertex[2], simplex.vertex[3], true)};
+    // Add the 4 vertices to sv_store
+    for (size_t i = 0; i < 4; ++i) {
+      sv_store[num_vertices++] = *simplex.vertex[i];
+    }
+
+    SimplexFace* tetrahedron[] = {newFace(0, 1, 2, true),  //
+                                  newFace(1, 0, 3, true),  //
+                                  newFace(2, 1, 3, true),  //
+                                  newFace(0, 2, 3, true)};
 
     if (hull.count == 4) {
-      SimplexF* best = findBest();  // find the best face (the face with the
-                                    // minimum distance to origin) to split
-      SimplexF outer = *best;
-      size_t pass = 0;
-      size_t iterations = 0;
-
       // set the face connectivity
       bind(tetrahedron[0], 0, tetrahedron[1], 0);
       bind(tetrahedron[0], 1, tetrahedron[2], 0);
@@ -1571,49 +1203,98 @@ EPA::Status EPA::evaluate(GJK& gjk, const Vec3f& guess) {
       bind(tetrahedron[1], 2, tetrahedron[2], 1);
       bind(tetrahedron[2], 2, tetrahedron[3], 1);
 
+      closest_face =
+          findClosestFace();  // find the best face (the face with the
+                              // minimum distance to origin) to split
+      SimplexFace outer = *closest_face;
+
       status = Valid;
+      iterations = 0;
+      size_t pass = 0;
       for (; iterations < max_iterations; ++iterations) {
-        if (nextsv >= max_vertex_num) {
+        if (num_vertices >= sv_store.size()) {
           status = OutOfVertices;
           break;
         }
 
+        // Step 1: find the support point in the direction of the closest_face
+        // normal.
+        // --------------------------------------------------------------------------
         SimplexHorizon horizon;
-        SimplexV* w = &sv_store[nextsv++];
+        SimplexVertex& w = sv_store[num_vertices++];
         bool valid = true;
-        best->pass = ++pass;
+        closest_face->pass = ++pass;
         // At the moment, SimplexF.n is always normalized. This could be revised
         // in the future...
-        gjk.getSupport(best->n, true, *w, hint);
-        FCL_REAL wdist = best->n.dot(w->w) - best->d;
-        if (wdist <= tolerance) {
+        gjk.getSupport(closest_face->n, w, support_hint);
+
+        // Step 2: check for convergence.
+        // ------------------------------
+        // Preambule to understand the convergence criterion of EPA:
+        // the support we just added is in the direction of the normal of
+        // the closest_face. Therefore, the support point will **always**
+        // lie "after" the closest_face, i.e closest_face.n.dot(w.w) > 0.
+        if (iterations > 0) {
+          assert(closest_face->n.dot(w.w) > -tolerance &&
+                 "The support is not in the right direction.");
+        }
+        //
+        // 1) First check: `fdist` (see below) is an upper bound of how much
+        // more penetration depth we can expect to "gain" by adding `w` to EPA's
+        // polytope. This first check, as any convergence check, should be both
+        // absolute and relative. This allows to adapt the tolerance to the
+        // scale of the objects.
+        const SimplexVertex& vf1 = sv_store[closest_face->vertex_id[0]];
+        const SimplexVertex& vf2 = sv_store[closest_face->vertex_id[1]];
+        const SimplexVertex& vf3 = sv_store[closest_face->vertex_id[2]];
+        CoalScalar fdist = closest_face->n.dot(w.w - vf1.w);
+        CoalScalar wnorm = w.w.norm();
+        // TODO(louis): we might want to use tol_abs and tol_rel; this might
+        // obfuscate the code for the user though.
+        if (fdist <= tolerance + tolerance * wnorm) {
           status = AccuracyReached;
           break;
         }
-        for (size_t j = 0; (j < 3) && valid; ++j)
-          valid &= expand(pass, w, best->f[j], best->e[j], horizon);
+        // 2) Second check: the expand function **assumes** that the support we
+        // just computed is not a vertex of the face. We make sure that this
+        // is the case:
+        // TODO(louis): should we use squaredNorm everywhere instead of norm?
+        if ((w.w - vf1.w).norm() <= tolerance + tolerance * wnorm ||
+            (w.w - vf2.w).norm() <= tolerance + tolerance * wnorm ||
+            (w.w - vf3.w).norm() <= tolerance + tolerance * wnorm) {
+          status = AccuracyReached;
+          break;
+        }
 
-        if (!valid || horizon.nf < 3) {
+        // Step 3: expand the polytope
+        // ---------------------------
+        for (size_t j = 0; (j < 3) && valid; ++j)
+          valid &= expand(pass, w, closest_face->adjacent_faces[j],
+                          closest_face->adjacent_edge[j], horizon);
+
+        if (!valid || horizon.num_faces < 3) {
           // The status has already been set by the expand function.
           assert(!(status & Valid));
           break;
         }
         // need to add the edge connectivity between first and last faces
-        bind(horizon.ff, 2, horizon.cf, 1);
-        hull.remove(best);
-        stock.append(best);
-        best = findBest();
-        outer = *best;
+        bind(horizon.first_face, 2, horizon.current_face, 1);
+        hull.remove(closest_face);
+        stock.append(closest_face);
+        closest_face = findClosestFace();
+        outer = *closest_face;
       }
 
+      status = ((iterations) < max_iterations) ? status : Failed;
       normal = outer.n;
-      depth = outer.d;
+      depth = outer.d + gjk.shape->swept_sphere_radius.sum();
       result.rank = 3;
-      result.vertex[0] = outer.vertex[0];
-      result.vertex[1] = outer.vertex[1];
-      result.vertex[2] = outer.vertex[2];
+      result.vertex[0] = &sv_store[outer.vertex_id[0]];
+      result.vertex[1] = &sv_store[outer.vertex_id[1]];
+      result.vertex[2] = &sv_store[outer.vertex_id[2]];
       return status;
     }
+    assert(false && "The tetrahedron with which EPA started is degenerated.");
   }
 
   // FallBack when the simplex given by GJK is of rank 1.
@@ -1624,38 +1305,118 @@ EPA::Status EPA::evaluate(GJK& gjk, const Vec3f& guess) {
   // TODO: define a better normal
   assert(simplex.rank == 1 && simplex.vertex[0]->w.isZero(gjk.getTolerance()));
   normal = -guess;
-  FCL_REAL nl = normal.norm();
+  CoalScalar nl = normal.norm();
   if (nl > 0)
     normal /= nl;
   else
-    normal = Vec3f(1, 0, 0);
+    normal = Vec3s(1, 0, 0);
   depth = 0;
   result.rank = 1;
   result.vertex[0] = simplex.vertex[0];
   return status;
 }
 
+// Use this function to debug `EPA::expand` if needed.
+// void EPA::PrintExpandLooping(const SimplexFace* f, const SimplexVertex& w) {
+//     std::cout << "Vertices:\n";
+//     for (size_t i = 0; i < num_vertices; ++i) {
+//       std::cout << "[";
+//       std::cout << sv_store[i].w(0) << ", ";
+//       std::cout << sv_store[i].w(1) << ", ";
+//       std::cout << sv_store[i].w(2) << "]\n";
+//     }
+//     //
+//     std::cout << "\nTriangles:\n";
+//     SimplexFace* face = hull.root;
+//     for (size_t i = 0; i < hull.count; ++i) {
+//       std::cout << "[";
+//       std::cout << face->vertex_id[0] << ", ";
+//       std::cout << face->vertex_id[1] << ", ";
+//       std::cout << face->vertex_id[2] << "]\n";
+//       face = face->next_face;
+//     }
+//     //
+//     std::cout << "\nNormals:\n";
+//     face = hull.root;
+//     for (size_t i = 0; i < hull.count; ++i) {
+//       std::cout << "[";
+//       std::cout << face->n(0) << ", ";
+//       std::cout << face->n(1) << ", ";
+//       std::cout << face->n(2) << "]\n";
+//       face = face->next_face;
+//     }
+//     //
+//     std::cout << "\nClosest face:\n";
+//     face = hull.root;
+//     for (size_t i = 0; i < hull.count; ++i) {
+//       if (face == closest_face) {
+//         std::cout << i << "\n";
+//       }
+//       face = face->next_face;
+//     }
+//     std::cout << "\nSupport point:\n";
+//     std::cout << "[" << w.w(0) << ", " << w.w(1) << ", " << w.w(2) << "]\n";
+// }
+
 /** @brief the goal is to add a face connecting vertex w and face edge f[e] */
-bool EPA::expand(size_t pass, SimplexV* w, SimplexF* f, size_t e,
+bool EPA::expand(size_t pass, const SimplexVertex& w, SimplexFace* f, size_t e,
                  SimplexHorizon& horizon) {
   static const size_t nexti[] = {1, 2, 0};
   static const size_t previ[] = {2, 0, 1};
+  const size_t id_w =
+      num_vertices - 1;  // w is always the last vertex added to sv_store
 
+  // Check if we loop through expand indefinitely.
   if (f->pass == pass) {
+    // Uncomment the following line and the associated EPA method
+    // to debug the infinite loop if needed.
+    // EPAPrintExpandLooping(this, f);
+    assert(f != closest_face && "EPA is looping indefinitely.");
     status = InvalidHull;
     return false;
   }
 
   const size_t e1 = nexti[e];
 
-  // case 1: the new face is not degenerated, i.e., the new face is not coplanar
-  // with the old face f.
-  if (f->n.dot(w->w - f->vertex[e]->w) <
-      -Eigen::NumTraits<FCL_REAL>::epsilon()) {
-    SimplexF* nf = newFace(f->vertex[e1], f->vertex[e], w, false);
-    if (nf) {
+  // Preambule: when expanding the polytope, the `closest_face` is always
+  // deleted. This is handled in EPA::evaluate after calling the expand
+  // function. This function handles how the neighboring face `f` of the
+  // `closest_face` is connected to the new support point. (Note: because
+  // `expand` is recursive, `f` can also denote a face of a face of the
+  // `closest_face`, and so on. But the reasoning is the same.)
+  //
+  // EPA can handle `f` in two ways, depending on where the new support point
+  // is located:
+  // 1) If it is "below" `f`, then `f` is preserved. A new face is created
+  //    and connects to the edge `e` of `f`. This new face is made of the
+  //    two points of the edge `e` of `f` and the new support point `w`.
+  //    Geometrically, this corresponds to the case where the projection of
+  //    the origin on the `closest_face` is **inside** the triangle defined by
+  //    the `closest_face`.
+  // 2) If it is "above" `f`, then `f` has to be deleted, simply because the
+  //    edge `e` of `f` is not part of the convex hull anymore.
+  //    The two faces adjacent to `f` are thus expanded following
+  //    either 1) or 2).
+  //    Geometrically, this corresponds to the case where the projection of
+  //    the origin on the `closest_face` is on an edge of the triangle defined
+  //    by the `closest_face`. The projection of the origin cannot lie on a
+  //    vertex of the `closest_face` because EPA should have exited before
+  //    reaching this point.
+  //
+  // The following checks for these two cases.
+  // This check is however subject to numerical precision and due to the
+  // recursive nature of `expand`, it is safer to go through the first case.
+  // This is because `expand` can potentially loop indefinitly if the
+  // Minkowski difference is very flat (hence the check above).
+  const CoalScalar dummy_precision(
+      3 * std::sqrt(std::numeric_limits<CoalScalar>::epsilon()));
+  const SimplexVertex& vf = sv_store[f->vertex_id[e]];
+  if (f->n.dot(w.w - vf.w) < dummy_precision) {
+    // case 1: the support point is "below" `f`.
+    SimplexFace* new_face = newFace(f->vertex_id[e1], f->vertex_id[e], id_w);
+    if (new_face != nullptr) {
       // add face-face connectivity
-      bind(nf, 0, f, e);
+      bind(new_face, 0, f, e);
 
       // if there is last face in the horizon, then need to add another
       // connectivity, i.e. the edge connecting the current new add edge and the
@@ -1663,24 +1424,24 @@ bool EPA::expand(size_t pass, SimplexV* w, SimplexF* f, size_t e,
       // the final face need to connect with the first face, this will be
       // handled in the evaluate function. Notice the face is anti-clockwise, so
       // the edges are 0 (bottom), 1 (right), 2 (left)
-      if (horizon.cf)
-        bind(nf, 2, horizon.cf, 1);
-      else
-        horizon.ff = nf;
+      if (horizon.current_face != nullptr) {
+        bind(new_face, 2, horizon.current_face, 1);
+      } else {
+        horizon.first_face = new_face;
+      }
 
-      horizon.cf = nf;
-      ++horizon.nf;
+      horizon.current_face = new_face;
+      ++horizon.num_faces;
       return true;
     }
     return false;
   }
 
-  // case 2: the new face is coplanar with the old face f. We need to add two
-  // faces and delete the old face
+  // case 2: the support point is "above" `f`.
   const size_t e2 = previ[e];
   f->pass = pass;
-  if (expand(pass, w, f->f[e1], f->e[e1], horizon) &&
-      expand(pass, w, f->f[e2], f->e[e2], horizon)) {
+  if (expand(pass, w, f->adjacent_faces[e1], f->adjacent_edge[e1], horizon) &&
+      expand(pass, w, f->adjacent_faces[e2], f->adjacent_edge[e2], horizon)) {
     hull.remove(f);
     stock.append(f);
     return true;
@@ -1688,15 +1449,89 @@ bool EPA::expand(size_t pass, SimplexV* w, SimplexF* f, size_t e,
   return false;
 }
 
-bool EPA::getClosestPoints(const MinkowskiDiff& shape, Vec3f& w0, Vec3f& w1) {
-  bool res = details::getClosestPoints(result, w0, w1);
-  if (!res) return false;
-  details::inflate<false>(shape, w0, w1);
-  return true;
+void EPA::getWitnessPointsAndNormal(const MinkowskiDiff& shape, Vec3s& w0,
+                                    Vec3s& w1, Vec3s& normal) const {
+  details::getClosestPoints(result, w0, w1);
+  if ((w0 - w1).norm() > Eigen::NumTraits<CoalScalar>::dummy_precision()) {
+    if (this->depth >= 0) {
+      // The shapes are in collision.
+      normal = (w0 - w1).normalized();
+    } else {
+      // The shapes are not in collision.
+      normal = (w1 - w0).normalized();
+    }
+  } else {
+    normal = this->normal;
+  }
+  details::inflate<false>(shape, normal, w0, w1);
 }
 
 }  // namespace details
 
-}  // namespace fcl
+void ConvexBase::buildSupportWarmStart() {
+  if (this->points->size() < ConvexBase::num_vertices_large_convex_threshold) {
+    return;
+  }
 
-}  // namespace hpp
+  this->support_warm_starts.points.reserve(ConvexBase::num_support_warm_starts);
+  this->support_warm_starts.indices.reserve(
+      ConvexBase::num_support_warm_starts);
+
+  Vec3s axiis(0, 0, 0);
+  details::ShapeSupportData support_data;
+  int support_hint = 0;
+  for (int i = 0; i < 3; ++i) {
+    axiis(i) = 1;
+    {
+      Vec3s support;
+      coal::details::getShapeSupport<false>(this, axiis, support, support_hint,
+                                            support_data);
+      this->support_warm_starts.points.emplace_back(support);
+      this->support_warm_starts.indices.emplace_back(support_hint);
+    }
+
+    axiis(i) = -1;
+    {
+      Vec3s support;
+      coal::details::getShapeSupport<false>(this, axiis, support, support_hint,
+                                            support_data);
+      this->support_warm_starts.points.emplace_back(support);
+      this->support_warm_starts.indices.emplace_back(support_hint);
+    }
+
+    axiis(i) = 0;
+  }
+
+  std::array<Vec3s, 4> eis = {Vec3s(1, 1, 1),    //
+                              Vec3s(-1, 1, 1),   //
+                              Vec3s(-1, -1, 1),  //
+                              Vec3s(1, -1, 1)};
+
+  for (size_t ei_index = 0; ei_index < 4; ++ei_index) {
+    {
+      Vec3s support;
+      coal::details::getShapeSupport<false>(this, eis[ei_index], support,
+                                            support_hint, support_data);
+      this->support_warm_starts.points.emplace_back(support);
+      this->support_warm_starts.indices.emplace_back(support_hint);
+    }
+
+    {
+      Vec3s support;
+      coal::details::getShapeSupport<false>(this, -eis[ei_index], support,
+                                            support_hint, support_data);
+      this->support_warm_starts.points.emplace_back(support);
+      this->support_warm_starts.indices.emplace_back(support_hint);
+    }
+  }
+
+  if (this->support_warm_starts.points.size() !=
+          ConvexBase::num_support_warm_starts ||
+      this->support_warm_starts.indices.size() !=
+          ConvexBase::num_support_warm_starts) {
+    COAL_THROW_PRETTY("Wrong number of support warm starts.",
+                      std::runtime_error);
+  }
+}
+
+}  // namespace coal

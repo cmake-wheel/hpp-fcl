@@ -6,6 +6,61 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [3.0.0] - 2024-11-20
+
+### Added
+- Renaming the library from `hpp-fcl` to `coal`. Created a `COAL_BACKWARD_COMPATIBILITY_WITH_HPP_FCL` CMake option for retro compatibility. This allows to still do `find_package(hpp-fcl)` and `#include <hpp/fcl/...>` in C++ and it allows to still do `import hppfcl` in python ([#596](https://github.com/humanoid-path-planner/hpp-fcl/pull/596)).
+- Added `Transform3f::Random` and `Transform3f::setRandom` ([#584](https://github.com/humanoid-path-planner/hpp-fcl/pull/584))
+- New feature: computation of contact surfaces for any pair of primitive shapes (triangle, sphere, ellipsoid, plane, halfspace, cone, capsule, cylinder, convex) ([#574](https://github.com/humanoid-path-planner/hpp-fcl/pull/574)).
+- Enhance Broadphase DynamicAABBTree to better handle planes and halfspace ([#570](https://github.com/humanoid-path-planner/hpp-fcl/pull/570))
+- [#558](https://github.com/humanoid-path-planner/hpp-fcl/pull/558):
+  - [internal] Removed dead code in `narrowphase/details.h` ([#558](https://github.com/humanoid-path-planner/hpp-fcl/pull/558))
+  - [internal] Removed specializations of methods of `GJKSolver`. Now the specializations are all handled by `ShapeShapeDistance` in `shape_shape_func.h`.
+  - [new feature] Added support for Swept-Sphere primitives (sphere, box, capsule, cone, ellipsoid, triangle, halfspace, plane, convex mesh).
+- [API change] Renamed default convergence criterion from `VDB` to `Default` ([#556](https://github.com/humanoid-path-planner/hpp-fcl/pull/556))
+- Fixed EPA returning nans on cases where it could return an estimate of the normal and penetration depth. ([#556](https://github.com/humanoid-path-planner/hpp-fcl/pull/556))
+- Fixed too low tolerance in GJK/EPA asserts ([#554](https://github.com/humanoid-path-planner/hpp-fcl/pull/554))
+- Fixed `normal_and_nearest_points` test (no need to have Eigen 3.4) ([#553](https://github.com/humanoid-path-planner/hpp-fcl/pull/553))
+- [#549](https://github.com/humanoid-path-planner/hpp-fcl/pull/549)
+- Optimize EPA: ignore useless faces in EPA's polytope; warm-start support computation for `Convex`; fix edge-cases witness points computation.
+- Add `Serializable` trait to transform, collision data, collision geometries, bounding volumes, bvh models, hfields. Collision problems can now be serialized from C++ and sent to python and vice versa.
+- CMake: allow use of installed jrl-cmakemodules ([#564](https://github.com/humanoid-path-planner/hpp-fcl/pull/564))
+- CMake: Add compatibility with jrl-cmakemodules workspace ([#610](https://github.com/humanoid-path-planner/hpp-fcl/pull/610))
+- Python: add id() support for geometries ([#618](https://github.com/humanoid-path-planner/hpp-fcl/pull/618)).
+
+
+### Fixed
+
+- Fix Fix serialization unit test when running without Qhull support ([#611](https://github.com/humanoid-path-planner/hpp-fcl/pull/611))
+- Compiler warnings ([#601](https://github.com/humanoid-path-planner/hpp-fcl/pull/601), [#605](https://github.com/humanoid-path-planner/hpp-fcl/pull/605))
+- CMake: fix assimp finder
+- Don't define GCC7 Boost serialization hack when `HPP_FCL_SKIP_EIGEN_BOOST_SERIALIZATION` is defined ([#530](https://github.com/humanoid-path-planner/hpp-fcl/pull/530))
+- Default parameters for narrowphase algorithms (GJK and EPA); fixed assertion checks that were sometimes failing in GJK simplex projection and BVH `collide` ([#531](https://github.com/humanoid-path-planner/hpp-fcl/pull/531)).
+- Created a new macro `HPP_FCL_ASSERT` which behaves as an assert by default. When the option `HPP_FCL_TURN_ASSERT_INTO_EXCEPTION` is turned on, it replaces the macro by an exception ([#533](https://github.com/humanoid-path-planner/hpp-fcl/pull/533)). Also fixed an EPA assert in `GJKSolver`.
+- Simplify internals of hpp-fcl ([#535](https://github.com/humanoid-path-planner/hpp-fcl/pull/535)):
+  - Computing distance between 2 primitives shapes does not use a traversal node anymore.
+  - Removed successive mallocs in GJK/EPA when using an instance of `GJKSolver` multiple times.
+  - `GJKSolver` now deals with **all** statuses of GJK/EPA. Some of these statuses represent a bad behavior of GJK/EPA and now trigger an assertion in Debug mode. Usefull for debugging these algos.
+  - Logging was added with macros like `HPP_FCL_LOG_(INFO/DEBUG/WARNING/ERROR)`; hpp-fcl can now log usefull info when the preprocessor option `HPP_FCL_ENABLE_LOGGING` is enabled.
+  - Deprecated `enable_distance_lower_bound` in `CollisionRequest`; a lower bound on distance is always computed.
+  - Deprecated `enable_nearest_points` in `DistanceRequest`; they are always computed and are the points of the shapes that achieve a distance of `DistanceResult::min_distance`.
+  - Added `enable_signed_distance` flag in `DistanceRequest` (default `true`). Turn this of for better performance if only the distance when objects are disjoint is needed.
+  - The internal collision and distance functions of hpp-fcl now use `CollisionRequest::enable_contact` and `DistanceRequest::enable_signed_distance` to control whether or not penetration information should be computed. There are many scenarios where we don't need the penetration information and only want to know if objects are colliding and compute their distance only if they are disjoint. These flags allow the user to control the trade-off between performance vs. information of the library.
+  - Fix convergence criterion of EPA; made GJK and EPA convergence criterion absolute + relative to scale to the shapes' dimensions; remove max face/vertices fields from EPA (these can be deduced from the max number of iterations)
+- Account for lateral borders in Height Fields model.
+- Fix compilation error on recent APPLE compilers ([#539](https://github.com/humanoid-path-planner/hpp-fcl/pull/539)).
+- Fix printing of deprecated message ([#540](https://github.com/humanoid-path-planner/hpp-fcl/pull/540)).
+- Fix compilation with earlier Eigen version
+- Fix compilation warning message
+- Fix issue in Octomap.computeLocalAABB
+- Fix unsupported function for contact_patch_matrix
+- Fix Octomap dependency on ROS
+
+## [2.4.5] - 2024-07-28
+
+### Fixed
+- Fix Octomap dependency on ROS
+
 ## [2.4.4] - 2024-03-06
 
 ## [2.4.3] - 2024-03-06
@@ -26,6 +81,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Fix call to clear methods for {Collision,Distance}Data inside init function ([#509](https://github.com/humanoid-path-planner/hpp-fcl/pull/509))
 - CMake: fix submodule use in bindings in ([#512](https://github.com/humanoid-path-planner/hpp-fcl/pull/512))
 - Fix bug in DynamicAABBTreeCollisionManager (see [#514](https://github.com/humanoid-path-planner/hpp-fcl/issues/514)) in ([#515](https://github.com/humanoid-path-planner/hpp-fcl/pull/515))
+### Added
+- In struct Contact
+  - Documentation of the members,
+  - initialization of normal, closest points and contact point in constructors
+  - method getDistanceToCollision
+- New variant of GJK (PolyakAcceleration).
+- Specialization of distance computation between
+  - Sphere and Capsule,
+  - Ellipsoid and Halfspace,
+  - Ellipsoid and Plane.
+- Collision computation between Octree and HeightField.
+
+### Changed
+- Matrixx3f and Matrixx3i become row major.
+- Use shared pointers to vectors instead of arrays for vertices and triangles in class BVHModelBase.
+
+### Removed
+- members related epa in class QueryRequest
 
 ## [2.4.0] - 2023-11-27
 
@@ -454,7 +527,9 @@ Now Eigen is at the heart of linear algebra computations.
 First release
 
 
-[Unreleased]: https://github.com/humanoid-path-planner/hpp-fcl/compare/v2.4.4...HEAD
+[Unreleased]: https://github.com/humanoid-path-planner/hpp-fcl/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/humanoid-path-planner/hpp-fcl/compare/v2.4.5...v3.0.0
+[2.4.5]: https://github.com/humanoid-path-planner/hpp-fcl/compare/v2.4.4...v2.4.5
 [2.4.4]: https://github.com/humanoid-path-planner/hpp-fcl/compare/v2.4.3...v2.4.4
 [2.4.3]: https://github.com/humanoid-path-planner/hpp-fcl/compare/v2.4.2...v2.4.3
 [2.4.2]: https://github.com/humanoid-path-planner/hpp-fcl/compare/v2.4.1...v2.4.2

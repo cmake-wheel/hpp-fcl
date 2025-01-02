@@ -1,7 +1,7 @@
 //
 // Software License Agreement (BSD License)
 //
-//  Copyright (c) 2019-2022 CNRS-LAAS INRIA
+//  Copyright (c) 2019-2024 CNRS-LAAS INRIA
 //  Author: Joseph Mirabel
 //  All rights reserved.
 //
@@ -35,45 +35,51 @@
 #include <eigenpy/eigenpy.hpp>
 #include <eigenpy/eigen-to-python.hpp>
 
-#include "fcl.hh"
+#if EIGENPY_VERSION_AT_LEAST(3, 8, 0)
+#include <eigenpy/id.hpp>
+#endif
+#include "coal.hh"
+
 #include "deprecation.hh"
 
-#include <hpp/fcl/fwd.hh>
-#include <hpp/fcl/shape/geometric_shapes.h>
-#include <hpp/fcl/shape/convex.h>
-#include <hpp/fcl/BVH/BVH_model.h>
-#include <hpp/fcl/hfield.h>
+#include "coal/fwd.hh"
+#include "coal/shape/geometric_shapes.h"
+#include "coal/shape/convex.h"
+#include "coal/BVH/BVH_model.h"
+#include "coal/hfield.h"
 
-#include <hpp/fcl/serialization/memory.h>
-#include <hpp/fcl/serialization/AABB.h>
-#include <hpp/fcl/serialization/BVH_model.h>
-#include <hpp/fcl/serialization/hfield.h>
-#include <hpp/fcl/serialization/geometric_shapes.h>
-#include <hpp/fcl/serialization/convex.h>
+#include "coal/serialization/memory.h"
+#include "coal/serialization/AABB.h"
+#include "coal/serialization/BVH_model.h"
+#include "coal/serialization/hfield.h"
+#include "coal/serialization/geometric_shapes.h"
+#include "coal/serialization/convex.h"
 
 #include "pickle.hh"
+#include "serializable.hh"
 
-#ifdef HPP_FCL_HAS_DOXYGEN_AUTODOC
+#ifdef COAL_HAS_DOXYGEN_AUTODOC
 // FIXME for a reason I do not understand, doxygen fails to understand that
-// BV_splitter is not defined in hpp/fcl/BVH/BVH_model.h
-#include <hpp/fcl/internal/BV_splitter.h>
-#include <hpp/fcl/broadphase/detail/hierarchy_tree.h>
+// BV_splitter is not defined in coal/BVH/BVH_model.h
+#include "coal/internal/BV_splitter.h"
+#include "coal/broadphase/detail/hierarchy_tree.h"
 
-#include "doxygen_autodoc/hpp/fcl/BVH/BVH_model.h"
-#include "doxygen_autodoc/hpp/fcl/BV/AABB.h"
-#include "doxygen_autodoc/hpp/fcl/hfield.h"
-#include "doxygen_autodoc/hpp/fcl/shape/geometric_shapes.h"
+#include "doxygen_autodoc/coal/BVH/BVH_model.h"
+#include "doxygen_autodoc/coal/BV/AABB.h"
+#include "doxygen_autodoc/coal/hfield.h"
+#include "doxygen_autodoc/coal/shape/geometric_shapes.h"
 #include "doxygen_autodoc/functions.h"
 #endif
 
 using namespace boost::python;
-using namespace hpp::fcl;
+using namespace coal;
+using namespace coal::python;
 namespace dv = doxygen::visitor;
 namespace bp = boost::python;
 
 using boost::noncopyable;
 
-typedef std::vector<Vec3f> Vec3fs;
+typedef std::vector<Vec3s> Vec3ss;
 typedef std::vector<Triangle> Triangles;
 
 struct BVHModelBaseWrapper {
@@ -81,18 +87,21 @@ struct BVHModelBaseWrapper {
   typedef Eigen::Map<RowMatrixX3> MapRowMatrixX3;
   typedef Eigen::Ref<RowMatrixX3> RefRowMatrixX3;
 
-  static Vec3f& vertex(BVHModelBase& bvh, unsigned int i) {
+  static Vec3s& vertex(BVHModelBase& bvh, unsigned int i) {
     if (i >= bvh.num_vertices) throw std::out_of_range("index is out of range");
-    return bvh.vertices[i];
+    return (*(bvh.vertices))[i];
   }
 
   static RefRowMatrixX3 vertices(BVHModelBase& bvh) {
-    return MapRowMatrixX3(bvh.vertices[0].data(), bvh.num_vertices, 3);
+    if (bvh.num_vertices > 0)
+      return MapRowMatrixX3(bvh.vertices->data()->data(), bvh.num_vertices, 3);
+    else
+      return MapRowMatrixX3(NULL, bvh.num_vertices, 3);
   }
 
   static Triangle tri_indices(const BVHModelBase& bvh, unsigned int i) {
     if (i >= bvh.num_tris) throw std::out_of_range("index is out of range");
-    return bvh.tri_indices[i];
+    return (*bvh.tri_indices)[i];
   }
 };
 
@@ -101,7 +110,7 @@ void exposeBVHModel(const std::string& bvname) {
   typedef BVHModel<BV> BVH;
 
   const std::string type_name = "BVHModel" + bvname;
-  class_<BVH, bases<BVHModelBase>, shared_ptr<BVH> >(
+  class_<BVH, bases<BVHModelBase>, shared_ptr<BVH>>(
       type_name.c_str(), doxygen::class_doc<BVH>(), no_init)
       .def(dv::init<BVH>())
       .def(dv::init<BVH, const BVH&>())
@@ -110,7 +119,12 @@ void exposeBVHModel(const std::string& bvname) {
       .DEF_CLASS_FUNC(BVHModelBase, memUsage)
       .def("clone", &BVH::clone, doxygen::member_func_doc(&BVH::clone),
            return_value_policy<manage_new_object>())
-      .def_pickle(PickleObject<BVH>());
+      .def_pickle(PickleObject<BVH>())
+      .def(SerializableVisitor<BVH>())
+#if EIGENPY_VERSION_AT_LEAST(3, 8, 0)
+      .def(eigenpy::IdVisitor<BVH>())
+#endif
+      ;
 }
 
 template <typename BV>
@@ -120,12 +134,12 @@ void exposeHeightField(const std::string& bvname) {
   typedef typename Geometry::Node Node;
 
   const std::string type_name = "HeightField" + bvname;
-  class_<Geometry, bases<Base>, shared_ptr<Geometry> >(
+  class_<Geometry, bases<Base>, shared_ptr<Geometry>>(
       type_name.c_str(), doxygen::class_doc<Geometry>(), no_init)
-      .def(dv::init<HeightField<BV> >())
+      .def(dv::init<HeightField<BV>>())
       .def(dv::init<HeightField<BV>, const HeightField<BV>&>())
-      .def(dv::init<HeightField<BV>, FCL_REAL, FCL_REAL, const MatrixXf&,
-                    bp::optional<FCL_REAL> >())
+      .def(dv::init<HeightField<BV>, CoalScalar, CoalScalar, const MatrixXs&,
+                    bp::optional<CoalScalar>>())
 
       .DEF_CLASS_FUNC(Geometry, getXDim)
       .DEF_CLASS_FUNC(Geometry, getYDim)
@@ -150,34 +164,65 @@ void exposeHeightField(const std::string& bvname) {
            doxygen::member_func_doc((Node & (Geometry::*)(unsigned int)) &
                                     Geometry::getBV),
            bp::return_internal_reference<>())
-      .def_pickle(PickleObject<Geometry>());
+      .def_pickle(PickleObject<Geometry>())
+      .def(SerializableVisitor<Geometry>())
+#if EIGENPY_VERSION_AT_LEAST(3, 8, 0)
+      .def(eigenpy::IdVisitor<Geometry>())
+#endif
+      ;
 }
 
 struct ConvexBaseWrapper {
   typedef Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor> RowMatrixX3;
   typedef Eigen::Map<RowMatrixX3> MapRowMatrixX3;
   typedef Eigen::Ref<RowMatrixX3> RefRowMatrixX3;
+  typedef Eigen::VectorXd VecOfDoubles;
+  typedef Eigen::Map<VecOfDoubles> MapVecOfDoubles;
+  typedef Eigen::Ref<VecOfDoubles> RefVecOfDoubles;
 
-  static Vec3f& point(const ConvexBase& convex, unsigned int i) {
+  static Vec3s& point(const ConvexBase& convex, unsigned int i) {
     if (i >= convex.num_points)
       throw std::out_of_range("index is out of range");
-    return convex.points[i];
+    return (*(convex.points))[i];
   }
 
   static RefRowMatrixX3 points(const ConvexBase& convex) {
-    return MapRowMatrixX3(convex.points[0].data(), convex.num_points, 3);
+    return MapRowMatrixX3((*(convex.points))[0].data(), convex.num_points, 3);
+  }
+
+  static Vec3s& normal(const ConvexBase& convex, unsigned int i) {
+    if (i >= convex.num_normals_and_offsets)
+      throw std::out_of_range("index is out of range");
+    return (*(convex.normals))[i];
+  }
+
+  static RefRowMatrixX3 normals(const ConvexBase& convex) {
+    return MapRowMatrixX3((*(convex.normals))[0].data(),
+                          convex.num_normals_and_offsets, 3);
+  }
+
+  static double offset(const ConvexBase& convex, unsigned int i) {
+    if (i >= convex.num_normals_and_offsets)
+      throw std::out_of_range("index is out of range");
+    return (*(convex.offsets))[i];
+  }
+
+  static RefVecOfDoubles offsets(const ConvexBase& convex) {
+    return MapVecOfDoubles(convex.offsets->data(),
+                           convex.num_normals_and_offsets, 1);
   }
 
   static list neighbors(const ConvexBase& convex, unsigned int i) {
     if (i >= convex.num_points)
       throw std::out_of_range("index is out of range");
     list n;
-    for (unsigned char j = 0; j < convex.neighbors[i].count(); ++j)
-      n.append(convex.neighbors[i][j]);
+    const std::vector<ConvexBase::Neighbors>& neighbors_ = *(convex.neighbors);
+    for (unsigned char j = 0; j < neighbors_[i].count(); ++j)
+      n.append(neighbors_[i][j]);
     return n;
   }
 
-  static ConvexBase* convexHull(const Vec3fs& points, bool keepTri,
+  static ConvexBase* convexHull(const Vec3ss& points, bool keepTri,
                                 const char* qhullCommand) {
     return ConvexBase::convexHull(points.data(), (unsigned int)points.size(),
                                   keepTri, qhullCommand);
@@ -191,16 +236,21 @@ struct ConvexWrapper {
   static PolygonT polygons(const Convex_t& convex, unsigned int i) {
     if (i >= convex.num_polygons)
       throw std::out_of_range("index is out of range");
-    return convex.polygons[i];
+    return (*convex.polygons)[i];
   }
 
-  static shared_ptr<Convex_t> constructor(const Vec3fs& _points,
+  static shared_ptr<Convex_t> constructor(const Vec3ss& _points,
                                           const Triangles& _tris) {
-    Vec3f* points = new Vec3f[_points.size()];
-    for (std::size_t i = 0; i < _points.size(); ++i) points[i] = _points[i];
-    Triangle* tris = new Triangle[_tris.size()];
-    for (std::size_t i = 0; i < _tris.size(); ++i) tris[i] = _tris[i];
-    return shared_ptr<Convex_t>(new Convex_t(true, points,
+    std::shared_ptr<std::vector<Vec3s>> points(
+        new std::vector<Vec3s>(_points.size()));
+    std::vector<Vec3s>& points_ = *points;
+    for (std::size_t i = 0; i < _points.size(); ++i) points_[i] = _points[i];
+
+    std::shared_ptr<std::vector<Triangle>> tris(
+        new std::vector<Triangle>(_tris.size()));
+    std::vector<Triangle>& tris_ = *tris;
+    for (std::size_t i = 0; i < _tris.size(); ++i) tris_[i] = _tris[i];
+    return shared_ptr<Convex_t>(new Convex_t(points,
                                              (unsigned int)_points.size(), tris,
                                              (unsigned int)_tris.size()));
   }
@@ -222,149 +272,208 @@ void exposeComputeMemoryFootprint() {
   defComputeMemoryFootprint<Halfspace>();
   defComputeMemoryFootprint<TriangleP>();
 
-  defComputeMemoryFootprint<BVHModel<OBB> >();
-  defComputeMemoryFootprint<BVHModel<RSS> >();
-  defComputeMemoryFootprint<BVHModel<OBBRSS> >();
+  defComputeMemoryFootprint<BVHModel<OBB>>();
+  defComputeMemoryFootprint<BVHModel<RSS>>();
+  defComputeMemoryFootprint<BVHModel<OBBRSS>>();
 }
 
 void exposeShapes() {
   class_<ShapeBase, bases<CollisionGeometry>, shared_ptr<ShapeBase>,
          noncopyable>("ShapeBase", doxygen::class_doc<ShapeBase>(), no_init)
       //.def ("getObjectType", &CollisionGeometry::getObjectType)
-      ;
+      .def(dv::member_func("setSweptSphereRadius",
+                           &ShapeBase::setSweptSphereRadius))
+      .def(dv::member_func("getSweptSphereRadius",
+                           &ShapeBase::getSweptSphereRadius));
 
-  class_<Box, bases<ShapeBase>, shared_ptr<Box> >(
+  class_<Box, bases<ShapeBase>, shared_ptr<Box>>(
       "Box", doxygen::class_doc<ShapeBase>(), no_init)
       .def(dv::init<Box>())
       .def(dv::init<Box, const Box&>())
-      .def(dv::init<Box, FCL_REAL, FCL_REAL, FCL_REAL>())
-      .def(dv::init<Box, const Vec3f&>())
+      .def(dv::init<Box, CoalScalar, CoalScalar, CoalScalar>())
+      .def(dv::init<Box, const Vec3s&>())
       .DEF_RW_CLASS_ATTRIB(Box, halfSide)
       .def("clone", &Box::clone, doxygen::member_func_doc(&Box::clone),
            return_value_policy<manage_new_object>())
-      .def_pickle(PickleObject<Box>());
+      .def_pickle(PickleObject<Box>())
+      .def(SerializableVisitor<Box>())
+#if EIGENPY_VERSION_AT_LEAST(3, 8, 0)
+      .def(eigenpy::IdVisitor<Box>())
+#endif
+      ;
 
-  class_<Capsule, bases<ShapeBase>, shared_ptr<Capsule> >(
+  class_<Capsule, bases<ShapeBase>, shared_ptr<Capsule>>(
       "Capsule", doxygen::class_doc<Capsule>(), no_init)
       .def(dv::init<Capsule>())
-      .def(dv::init<Capsule, FCL_REAL, FCL_REAL>())
+      .def(dv::init<Capsule, CoalScalar, CoalScalar>())
       .def(dv::init<Capsule, const Capsule&>())
       .DEF_RW_CLASS_ATTRIB(Capsule, radius)
       .DEF_RW_CLASS_ATTRIB(Capsule, halfLength)
       .def("clone", &Capsule::clone, doxygen::member_func_doc(&Capsule::clone),
            return_value_policy<manage_new_object>())
-      .def_pickle(PickleObject<Capsule>());
+      .def_pickle(PickleObject<Capsule>())
+      .def(SerializableVisitor<Capsule>())
+#if EIGENPY_VERSION_AT_LEAST(3, 8, 0)
+      .def(eigenpy::IdVisitor<Capsule>())
+#endif
+      ;
 
-  class_<Cone, bases<ShapeBase>, shared_ptr<Cone> >(
+  class_<Cone, bases<ShapeBase>, shared_ptr<Cone>>(
       "Cone", doxygen::class_doc<Cone>(), no_init)
       .def(dv::init<Cone>())
-      .def(dv::init<Cone, FCL_REAL, FCL_REAL>())
+      .def(dv::init<Cone, CoalScalar, CoalScalar>())
       .def(dv::init<Cone, const Cone&>())
       .DEF_RW_CLASS_ATTRIB(Cone, radius)
       .DEF_RW_CLASS_ATTRIB(Cone, halfLength)
       .def("clone", &Cone::clone, doxygen::member_func_doc(&Cone::clone),
            return_value_policy<manage_new_object>())
-      .def_pickle(PickleObject<Cone>());
+      .def_pickle(PickleObject<Cone>())
+      .def(SerializableVisitor<Cone>())
+#if EIGENPY_VERSION_AT_LEAST(3, 8, 0)
+      .def(eigenpy::IdVisitor<Cone>())
+#endif
+      ;
 
   class_<ConvexBase, bases<ShapeBase>, shared_ptr<ConvexBase>, noncopyable>(
       "ConvexBase", doxygen::class_doc<ConvexBase>(), no_init)
       .DEF_RO_CLASS_ATTRIB(ConvexBase, center)
       .DEF_RO_CLASS_ATTRIB(ConvexBase, num_points)
+      .DEF_RO_CLASS_ATTRIB(ConvexBase, num_normals_and_offsets)
       .def("point", &ConvexBaseWrapper::point, bp::args("self", "index"),
            "Retrieve the point given by its index.",
            bp::return_internal_reference<>())
       .def("points", &ConvexBaseWrapper::point, bp::args("self", "index"),
            "Retrieve the point given by its index.",
-           ::hpp::fcl::python::deprecated_member<
-               bp::return_internal_reference<> >())
+           ::coal::python::deprecated_member<bp::return_internal_reference<>>())
       .def("points", &ConvexBaseWrapper::points, bp::args("self"),
            "Retrieve all the points.",
            bp::with_custodian_and_ward_postcall<0, 1>())
       //    .add_property ("points",
       //                   bp::make_function(&ConvexBaseWrapper::points,bp::with_custodian_and_ward_postcall<0,1>()),
       //                   "Points of the convex.")
+      .def("normal", &ConvexBaseWrapper::normal, bp::args("self", "index"),
+           "Retrieve the normal given by its index.",
+           bp::return_internal_reference<>())
+      .def("normals", &ConvexBaseWrapper::normals, bp::args("self"),
+           "Retrieve all the normals.",
+           bp::with_custodian_and_ward_postcall<0, 1>())
+      .def("offset", &ConvexBaseWrapper::offset, bp::args("self", "index"),
+           "Retrieve the offset given by its index.")
+      .def("offsets", &ConvexBaseWrapper::offsets, bp::args("self"),
+           "Retrieve all the offsets.",
+           bp::with_custodian_and_ward_postcall<0, 1>())
       .def("neighbors", &ConvexBaseWrapper::neighbors)
       .def("convexHull", &ConvexBaseWrapper::convexHull,
-           doxygen::member_func_doc(&ConvexBase::convexHull),
+           // doxygen::member_func_doc(&ConvexBase::convexHull),
            return_value_policy<manage_new_object>())
       .staticmethod("convexHull")
       .def("clone", &ConvexBase::clone,
            doxygen::member_func_doc(&ConvexBase::clone),
            return_value_policy<manage_new_object>());
 
-  class_<Convex<Triangle>, bases<ConvexBase>, shared_ptr<Convex<Triangle> >,
-         noncopyable>("Convex", doxygen::class_doc<Convex<Triangle> >(),
-                      no_init)
+  class_<Convex<Triangle>, bases<ConvexBase>, shared_ptr<Convex<Triangle>>,
+         noncopyable>("Convex", doxygen::class_doc<Convex<Triangle>>(), no_init)
       .def("__init__", make_constructor(&ConvexWrapper<Triangle>::constructor))
-      .def(dv::init<Convex<Triangle> >())
+      .def(dv::init<Convex<Triangle>>())
       .def(dv::init<Convex<Triangle>, const Convex<Triangle>&>())
       .DEF_RO_CLASS_ATTRIB(Convex<Triangle>, num_polygons)
       .def("polygons", &ConvexWrapper<Triangle>::polygons)
-      .def_pickle(PickleObject<Convex<Triangle> >());
+      .def_pickle(PickleObject<Convex<Triangle>>())
+      .def(SerializableVisitor<Convex<Triangle>>())
+#if EIGENPY_VERSION_AT_LEAST(3, 8, 0)
+      .def(eigenpy::IdVisitor<Convex<Triangle>>())
+#endif
+      ;
 
-  class_<Cylinder, bases<ShapeBase>, shared_ptr<Cylinder> >(
+  class_<Cylinder, bases<ShapeBase>, shared_ptr<Cylinder>>(
       "Cylinder", doxygen::class_doc<Cylinder>(), no_init)
       .def(dv::init<Cylinder>())
-      .def(dv::init<Cylinder, FCL_REAL, FCL_REAL>())
+      .def(dv::init<Cylinder, CoalScalar, CoalScalar>())
       .def(dv::init<Cylinder, const Cylinder&>())
       .DEF_RW_CLASS_ATTRIB(Cylinder, radius)
       .DEF_RW_CLASS_ATTRIB(Cylinder, halfLength)
       .def("clone", &Cylinder::clone,
            doxygen::member_func_doc(&Cylinder::clone),
            return_value_policy<manage_new_object>())
-      .def_pickle(PickleObject<Cylinder>());
+      .def_pickle(PickleObject<Cylinder>())
+      .def(SerializableVisitor<Cylinder>())
+#if EIGENPY_VERSION_AT_LEAST(3, 8, 0)
+      .def(eigenpy::IdVisitor<Cylinder>())
+#endif
+      ;
 
-  class_<Halfspace, bases<ShapeBase>, shared_ptr<Halfspace> >(
+  class_<Halfspace, bases<ShapeBase>, shared_ptr<Halfspace>>(
       "Halfspace", doxygen::class_doc<Halfspace>(), no_init)
-      .def(dv::init<Halfspace, const Vec3f&, FCL_REAL>())
+      .def(dv::init<Halfspace, const Vec3s&, CoalScalar>())
       .def(dv::init<Halfspace, const Halfspace&>())
-      .def(dv::init<Halfspace, FCL_REAL, FCL_REAL, FCL_REAL, FCL_REAL>())
+      .def(
+          dv::init<Halfspace, CoalScalar, CoalScalar, CoalScalar, CoalScalar>())
       .def(dv::init<Halfspace>())
       .DEF_RW_CLASS_ATTRIB(Halfspace, n)
       .DEF_RW_CLASS_ATTRIB(Halfspace, d)
       .def("clone", &Halfspace::clone,
            doxygen::member_func_doc(&Halfspace::clone),
            return_value_policy<manage_new_object>())
-      .def_pickle(PickleObject<Halfspace>());
+      .def_pickle(PickleObject<Halfspace>())
+      .def(SerializableVisitor<Halfspace>())
+#if EIGENPY_VERSION_AT_LEAST(3, 8, 0)
+      .def(eigenpy::IdVisitor<Halfspace>())
+#endif
+      ;
 
-  class_<Plane, bases<ShapeBase>, shared_ptr<Plane> >(
+  class_<Plane, bases<ShapeBase>, shared_ptr<Plane>>(
       "Plane", doxygen::class_doc<Plane>(), no_init)
-      .def(dv::init<Plane, const Vec3f&, FCL_REAL>())
+      .def(dv::init<Plane, const Vec3s&, CoalScalar>())
       .def(dv::init<Plane, const Plane&>())
-      .def(dv::init<Plane, FCL_REAL, FCL_REAL, FCL_REAL, FCL_REAL>())
+      .def(dv::init<Plane, CoalScalar, CoalScalar, CoalScalar, CoalScalar>())
       .def(dv::init<Plane>())
       .DEF_RW_CLASS_ATTRIB(Plane, n)
       .DEF_RW_CLASS_ATTRIB(Plane, d)
       .def("clone", &Plane::clone, doxygen::member_func_doc(&Plane::clone),
            return_value_policy<manage_new_object>())
-      .def_pickle(PickleObject<Plane>());
+      .def_pickle(PickleObject<Plane>())
+      .def(SerializableVisitor<Plane>())
+#if EIGENPY_VERSION_AT_LEAST(3, 8, 0)
+      .def(eigenpy::IdVisitor<Plane>())
+#endif
+      ;
 
-  class_<Sphere, bases<ShapeBase>, shared_ptr<Sphere> >(
+  class_<Sphere, bases<ShapeBase>, shared_ptr<Sphere>>(
       "Sphere", doxygen::class_doc<Sphere>(), no_init)
       .def(dv::init<Sphere>())
       .def(dv::init<Sphere, const Sphere&>())
-      .def(dv::init<Sphere, FCL_REAL>())
+      .def(dv::init<Sphere, CoalScalar>())
       .DEF_RW_CLASS_ATTRIB(Sphere, radius)
       .def("clone", &Sphere::clone, doxygen::member_func_doc(&Sphere::clone),
            return_value_policy<manage_new_object>())
-      .def_pickle(PickleObject<Sphere>());
+      .def_pickle(PickleObject<Sphere>())
+      .def(SerializableVisitor<Sphere>())
+#if EIGENPY_VERSION_AT_LEAST(3, 8, 0)
+      .def(eigenpy::IdVisitor<Sphere>())
+#endif
+      ;
 
-  class_<Ellipsoid, bases<ShapeBase>, shared_ptr<Ellipsoid> >(
+  class_<Ellipsoid, bases<ShapeBase>, shared_ptr<Ellipsoid>>(
       "Ellipsoid", doxygen::class_doc<Ellipsoid>(), no_init)
       .def(dv::init<Ellipsoid>())
-      .def(dv::init<Ellipsoid, FCL_REAL, FCL_REAL, FCL_REAL>())
-      .def(dv::init<Ellipsoid, Vec3f>())
+      .def(dv::init<Ellipsoid, CoalScalar, CoalScalar, CoalScalar>())
+      .def(dv::init<Ellipsoid, Vec3s>())
       .def(dv::init<Ellipsoid, const Ellipsoid&>())
       .DEF_RW_CLASS_ATTRIB(Ellipsoid, radii)
       .def("clone", &Ellipsoid::clone,
            doxygen::member_func_doc(&Ellipsoid::clone),
            return_value_policy<manage_new_object>())
-      .def_pickle(PickleObject<Ellipsoid>());
+      .def_pickle(PickleObject<Ellipsoid>())
+      .def(SerializableVisitor<Ellipsoid>())
+#if EIGENPY_VERSION_AT_LEAST(3, 8, 0)
+      .def(eigenpy::IdVisitor<Ellipsoid>())
+#endif
+      ;
 
-  class_<TriangleP, bases<ShapeBase>, shared_ptr<TriangleP> >(
+  class_<TriangleP, bases<ShapeBase>, shared_ptr<TriangleP>>(
       "TriangleP", doxygen::class_doc<TriangleP>(), no_init)
       .def(dv::init<TriangleP>())
-      .def(dv::init<TriangleP, const Vec3f&, const Vec3f&, const Vec3f&>())
+      .def(dv::init<TriangleP, const Vec3s&, const Vec3s&, const Vec3s&>())
       .def(dv::init<TriangleP, const TriangleP&>())
       .DEF_RW_CLASS_ATTRIB(TriangleP, a)
       .DEF_RW_CLASS_ATTRIB(TriangleP, b)
@@ -372,12 +481,17 @@ void exposeShapes() {
       .def("clone", &TriangleP::clone,
            doxygen::member_func_doc(&TriangleP::clone),
            return_value_policy<manage_new_object>())
-      .def_pickle(PickleObject<TriangleP>());
+      .def_pickle(PickleObject<TriangleP>())
+      .def(SerializableVisitor<TriangleP>())
+#if EIGENPY_VERSION_AT_LEAST(3, 8, 0)
+      .def(eigenpy::IdVisitor<TriangleP>())
+#endif
+      ;
 }
 
 boost::python::tuple AABB_distance_proxy(const AABB& self, const AABB& other) {
-  Vec3f P, Q;
-  FCL_REAL distance = self.distance(other, &P, &Q);
+  Vec3s P, Q;
+  CoalScalar distance = self.distance(other, &P, &Q);
   return boost::python::make_tuple(distance, P, Q);
 }
 
@@ -440,17 +554,17 @@ void exposeCollisionGeometries() {
                no_init)
       .def(init<>(bp::arg("self"), "Default constructor"))
       .def(init<AABB>(bp::args("self", "other"), "Copy constructor"))
-      .def(init<Vec3f>(bp::args("self", "v"),
+      .def(init<Vec3s>(bp::args("self", "v"),
                        "Creating an AABB at position v with zero size."))
-      .def(init<Vec3f, Vec3f>(bp::args("self", "a", "b"),
+      .def(init<Vec3s, Vec3s>(bp::args("self", "a", "b"),
                               "Creating an AABB with two endpoints a and b."))
-      .def(init<AABB, Vec3f>(
+      .def(init<AABB, Vec3s>(
           bp::args("self", "core", "delta"),
           "Creating an AABB centered as core and is of half-dimension delta."))
-      .def(init<Vec3f, Vec3f, Vec3f>(bp::args("self", "a", "b", "c"),
+      .def(init<Vec3s, Vec3s, Vec3s>(bp::args("self", "a", "b", "c"),
                                      "Creating an AABB contains three points."))
 
-      .def("contain", (bool(AABB::*)(const Vec3f&) const) & AABB::contain,
+      .def("contain", (bool(AABB::*)(const Vec3s&) const) & AABB::contain,
            bp::args("self", "p"), "Check whether the AABB contains a point p.")
       .def("contain", (bool(AABB::*)(const AABB&) const) & AABB::contain,
            bp::args("self", "other"),
@@ -463,7 +577,7 @@ void exposeCollisionGeometries() {
            "Check whether two AABB are overlaping and return the overloaping "
            "part if true.")
 
-      .def("distance", (FCL_REAL(AABB::*)(const AABB&) const) & AABB::distance,
+      .def("distance", (CoalScalar(AABB::*)(const AABB&) const)&AABB::distance,
            bp::args("self", "other"), "Distance between two AABBs.")
       //    .def("distance",
       //         AABB_distance_proxy,
@@ -473,18 +587,18 @@ void exposeCollisionGeometries() {
       .add_property(
           "min_",
           bp::make_function(
-              +[](AABB& self) -> Vec3f& { return self.min_; },
+              +[](AABB& self) -> Vec3s& { return self.min_; },
               bp::return_internal_reference<>()),
           bp::make_function(
-              +[](AABB& self, const Vec3f& min_) -> void { self.min_ = min_; }),
+              +[](AABB& self, const Vec3s& min_) -> void { self.min_ = min_; }),
           "The min point in the AABB.")
       .add_property(
           "max_",
           bp::make_function(
-              +[](AABB& self) -> Vec3f& { return self.max_; },
+              +[](AABB& self) -> Vec3s& { return self.max_; },
               bp::return_internal_reference<>()),
           bp::make_function(
-              +[](AABB& self, const Vec3f& max_) -> void { self.max_ = max_; }),
+              +[](AABB& self, const Vec3s& max_) -> void { self.max_ = max_; }),
           "The max point in the AABB.")
 
       .def(bp::self == bp::self)
@@ -492,7 +606,7 @@ void exposeCollisionGeometries() {
 
       .def(bp::self + bp::self)
       .def(bp::self += bp::self)
-      .def(bp::self += Vec3f())
+      .def(bp::self += Vec3s())
 
       .def("size", &AABB::volume, bp::arg("self"), "Size of the AABB.")
       .def("center", &AABB::center, bp::arg("self"), "Center of the AABB.")
@@ -502,31 +616,36 @@ void exposeCollisionGeometries() {
       .def("volume", &AABB::volume, bp::arg("self"), "Volume of the AABB.")
 
       .def("expand",
-           static_cast<AABB& (AABB::*)(const AABB&, FCL_REAL)>(&AABB::expand),
+           static_cast<AABB& (AABB::*)(const AABB&, CoalScalar)>(&AABB::expand),
            //         doxygen::member_func_doc(static_cast<AABB& (AABB::*)(const
-           //         AABB &, FCL_REAL)>(&AABB::expand)),
+           //         AABB &, CoalScalar)>(&AABB::expand)),
            //         doxygen::member_func_args(static_cast<AABB&
-           //         (AABB::*)(const AABB &, FCL_REAL)>(&AABB::expand)),
+           //         (AABB::*)(const AABB &, CoalScalar)>(&AABB::expand)),
            bp::return_internal_reference<>())
       .def("expand",
-           static_cast<AABB& (AABB::*)(const FCL_REAL)>(&AABB::expand),
+           static_cast<AABB& (AABB::*)(const CoalScalar)>(&AABB::expand),
            //         doxygen::member_func_doc(static_cast<AABB& (AABB::*)(const
-           //         FCL_REAL)>(&AABB::expand)),
+           //         CoalScalar)>(&AABB::expand)),
            //         doxygen::member_func_args(static_cast<AABB&
-           //         (AABB::*)(const FCL_REAL)>(&AABB::expand)),
+           //         (AABB::*)(const CoalScalar)>(&AABB::expand)),
            bp::return_internal_reference<>())
-      .def("expand", static_cast<AABB& (AABB::*)(const Vec3f&)>(&AABB::expand),
+      .def("expand", static_cast<AABB& (AABB::*)(const Vec3s&)>(&AABB::expand),
            //         doxygen::member_func_doc(static_cast<AABB& (AABB::*)(const
-           //         Vec3f &)>(&AABB::expand)),
+           //         Vec3s &)>(&AABB::expand)),
            //         doxygen::member_func_args(static_cast<AABB&
-           //         (AABB::*)(const Vec3f &)>(&AABB::expand)),
+           //         (AABB::*)(const Vec3s &)>(&AABB::expand)),
            bp::return_internal_reference<>())
-      .def_pickle(PickleObject<AABB>());
+      .def_pickle(PickleObject<AABB>())
+      .def(SerializableVisitor<AABB>())
+#if EIGENPY_VERSION_AT_LEAST(3, 8, 0)
+      .def(eigenpy::IdVisitor<AABB>())
+#endif
+      ;
 
-  def("translate", (AABB(*)(const AABB&, const Vec3f&)) & translate,
+  def("translate", (AABB(*)(const AABB&, const Vec3s&))&translate,
       bp::args("aabb", "t"), "Translate the center of AABB by t");
 
-  def("rotate", (AABB(*)(const AABB&, const Matrix3f&)) & rotate,
+  def("rotate", (AABB(*)(const AABB&, const Matrix3s&))&rotate,
       bp::args("aabb", "R"), "Rotate the AABB object by R");
 
   if (!eigenpy::register_symbolic_link_to_registered_type<
@@ -581,8 +700,7 @@ void exposeCollisionGeometries() {
            bp::return_internal_reference<>())
       .def("vertices", &BVHModelBaseWrapper::vertex, bp::args("self", "index"),
            "Retrieve the vertex given by its index.",
-           ::hpp::fcl::python::deprecated_member<
-               bp::return_internal_reference<> >())
+           ::coal::python::deprecated_member<bp::return_internal_reference<>>())
       .def("vertices", &BVHModelBaseWrapper::vertices, bp::args("self"),
            "Retrieve all the vertices.",
            bp::with_custodian_and_ward_postcall<0, 1>())
@@ -608,9 +726,9 @@ void exposeCollisionGeometries() {
       .def(dv::member_func("addTriangle", &BVHModelBase::addTriangle))
       .def(dv::member_func("addTriangles", &BVHModelBase::addTriangles))
       .def(dv::member_func<int (BVHModelBase::*)(
-               const Vec3fs&, const Triangles&)>("addSubModel",
+               const Vec3ss&, const Triangles&)>("addSubModel",
                                                  &BVHModelBase::addSubModel))
-      .def(dv::member_func<int (BVHModelBase::*)(const Vec3fs&)>(
+      .def(dv::member_func<int (BVHModelBase::*)(const Vec3ss&)>(
           "addSubModel", &BVHModelBase::addSubModel))
       .def(dv::member_func("endModel", &BVHModelBase::endModel))
       // Expose function to replace a BVH
@@ -634,11 +752,11 @@ void exposeCollisionObject() {
   if (!eigenpy::register_symbolic_link_to_registered_type<CollisionObject>()) {
     class_<CollisionObject, CollisionObjectPtr_t>("CollisionObject", no_init)
         .def(dv::init<CollisionObject, const CollisionGeometryPtr_t&,
-                      bp::optional<bool> >())
+                      bp::optional<bool>>())
         .def(dv::init<CollisionObject, const CollisionGeometryPtr_t&,
-                      const Transform3f&, bp::optional<bool> >())
+                      const Transform3s&, bp::optional<bool>>())
         .def(dv::init<CollisionObject, const CollisionGeometryPtr_t&,
-                      const Matrix3f&, const Vec3f&, bp::optional<bool> >())
+                      const Matrix3s&, const Vec3s&, bp::optional<bool>>())
 
         .DEF_CLASS_FUNC(CollisionObject, getObjectType)
         .DEF_CLASS_FUNC(CollisionObject, getNodeType)
@@ -658,7 +776,7 @@ void exposeCollisionObject() {
                          bp::return_value_policy<bp::copy_const_reference>())
         .def(dv::member_func(
             "setTransform",
-            static_cast<void (CollisionObject::*)(const Transform3f&)>(
+            static_cast<void (CollisionObject::*)(const Transform3s&)>(
                 &CollisionObject::setTransform)))
 
         .DEF_CLASS_FUNC(CollisionObject, isIdentityTransform)

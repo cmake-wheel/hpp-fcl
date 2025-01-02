@@ -1,16 +1,16 @@
 import unittest
 from test_case import TestCase
-import hppfcl
+import coal
 import numpy as np
 
 
 class TestGeometricShapes(TestCase):
     def test_capsule(self):
-        capsule = hppfcl.Capsule(1.0, 2.0)
-        self.assertIsInstance(capsule, hppfcl.Capsule)
-        self.assertIsInstance(capsule, hppfcl.ShapeBase)
-        self.assertIsInstance(capsule, hppfcl.CollisionGeometry)
-        self.assertEqual(capsule.getNodeType(), hppfcl.NODE_TYPE.GEOM_CAPSULE)
+        capsule = coal.Capsule(1.0, 2.0)
+        self.assertIsInstance(capsule, coal.Capsule)
+        self.assertIsInstance(capsule, coal.ShapeBase)
+        self.assertIsInstance(capsule, coal.CollisionGeometry)
+        self.assertEqual(capsule.getNodeType(), coal.NODE_TYPE.GEOM_CAPSULE)
         self.assertEqual(capsule.radius, 1.0)
         self.assertEqual(capsule.halfLength, 1.0)
         capsule.radius = 3.0
@@ -47,11 +47,11 @@ class TestGeometricShapes(TestCase):
         self.assertApprox(Ic, I0_ref)
 
     def test_box1(self):
-        box = hppfcl.Box(np.array([1.0, 2.0, 3.0]))
-        self.assertIsInstance(box, hppfcl.Box)
-        self.assertIsInstance(box, hppfcl.ShapeBase)
-        self.assertIsInstance(box, hppfcl.CollisionGeometry)
-        self.assertEqual(box.getNodeType(), hppfcl.NODE_TYPE.GEOM_BOX)
+        box = coal.Box(np.array([1.0, 2.0, 3.0]))
+        self.assertIsInstance(box, coal.Box)
+        self.assertIsInstance(box, coal.ShapeBase)
+        self.assertIsInstance(box, coal.CollisionGeometry)
+        self.assertEqual(box.getNodeType(), coal.NODE_TYPE.GEOM_BOX)
         self.assertTrue(np.array_equal(box.halfSide, np.array([0.5, 1.0, 1.5])))
         box.halfSide = np.array([4.0, 5.0, 6.0])
         self.assertTrue(np.array_equal(box.halfSide, np.array([4.0, 5.0, 6.0])))
@@ -73,21 +73,21 @@ class TestGeometricShapes(TestCase):
         self.assertApprox(Ic, I0_ref)
 
     def test_box2(self):
-        box = hppfcl.Box(1.0, 2.0, 3)
-        self.assertIsInstance(box, hppfcl.Box)
-        self.assertIsInstance(box, hppfcl.ShapeBase)
-        self.assertIsInstance(box, hppfcl.CollisionGeometry)
-        self.assertEqual(box.getNodeType(), hppfcl.NODE_TYPE.GEOM_BOX)
+        box = coal.Box(1.0, 2.0, 3)
+        self.assertIsInstance(box, coal.Box)
+        self.assertIsInstance(box, coal.ShapeBase)
+        self.assertIsInstance(box, coal.CollisionGeometry)
+        self.assertEqual(box.getNodeType(), coal.NODE_TYPE.GEOM_BOX)
         self.assertEqual(box.halfSide[0], 0.5)
         self.assertEqual(box.halfSide[1], 1.0)
         self.assertEqual(box.halfSide[2], 1.5)
 
     def test_sphere(self):
-        sphere = hppfcl.Sphere(1.0)
-        self.assertIsInstance(sphere, hppfcl.Sphere)
-        self.assertIsInstance(sphere, hppfcl.ShapeBase)
-        self.assertIsInstance(sphere, hppfcl.CollisionGeometry)
-        self.assertEqual(sphere.getNodeType(), hppfcl.NODE_TYPE.GEOM_SPHERE)
+        sphere = coal.Sphere(1.0)
+        self.assertIsInstance(sphere, coal.Sphere)
+        self.assertIsInstance(sphere, coal.ShapeBase)
+        self.assertIsInstance(sphere, coal.CollisionGeometry)
+        self.assertEqual(sphere.getNodeType(), coal.NODE_TYPE.GEOM_SPHERE)
         self.assertEqual(sphere.radius, 1.0)
         sphere.radius = 2.0
         self.assertEqual(sphere.radius, 2.0)
@@ -103,11 +103,11 @@ class TestGeometricShapes(TestCase):
         self.assertApprox(Ic, I0_ref)
 
     def test_cylinder(self):
-        cylinder = hppfcl.Cylinder(1.0, 2.0)
-        self.assertIsInstance(cylinder, hppfcl.Cylinder)
-        self.assertIsInstance(cylinder, hppfcl.ShapeBase)
-        self.assertIsInstance(cylinder, hppfcl.CollisionGeometry)
-        self.assertEqual(cylinder.getNodeType(), hppfcl.NODE_TYPE.GEOM_CYLINDER)
+        cylinder = coal.Cylinder(1.0, 2.0)
+        self.assertIsInstance(cylinder, coal.Cylinder)
+        self.assertIsInstance(cylinder, coal.ShapeBase)
+        self.assertIsInstance(cylinder, coal.CollisionGeometry)
+        self.assertEqual(cylinder.getNodeType(), coal.NODE_TYPE.GEOM_CYLINDER)
         self.assertEqual(cylinder.radius, 1.0)
         self.assertEqual(cylinder.halfLength, 1.0)
         cylinder.radius = 3.0
@@ -120,9 +120,7 @@ class TestGeometricShapes(TestCase):
         V_ref = cylinder.radius * cylinder.radius * np.pi * 2.0 * cylinder.halfLength
         self.assertApprox(V, V_ref)
         I0 = cylinder.computeMomentofInertia()
-        Ix_ref = (
-            V_ref * (3 * cylinder.radius**2 + 4 * cylinder.halfLength**2) / 12.0
-        )
+        Ix_ref = V_ref * (3 * cylinder.radius**2 + 4 * cylinder.halfLength**2) / 12.0
         Iz_ref = V_ref * cylinder.radius**2 / 2.0
         I0_ref = np.diag([Ix_ref, Ix_ref, Iz_ref])
         self.assertApprox(I0, I0_ref)
@@ -130,11 +128,11 @@ class TestGeometricShapes(TestCase):
         self.assertApprox(Ic, I0_ref)
 
     def test_cone(self):
-        cone = hppfcl.Cone(1.0, 2.0)
-        self.assertIsInstance(cone, hppfcl.Cone)
-        self.assertIsInstance(cone, hppfcl.ShapeBase)
-        self.assertIsInstance(cone, hppfcl.CollisionGeometry)
-        self.assertEqual(cone.getNodeType(), hppfcl.NODE_TYPE.GEOM_CONE)
+        cone = coal.Cone(1.0, 2.0)
+        self.assertIsInstance(cone, coal.Cone)
+        self.assertIsInstance(cone, coal.ShapeBase)
+        self.assertIsInstance(cone, coal.CollisionGeometry)
+        self.assertEqual(cone.getNodeType(), coal.NODE_TYPE.GEOM_CONE)
         self.assertEqual(cone.radius, 1.0)
         self.assertEqual(cone.halfLength, 1.0)
         cone.radius = 3.0
@@ -156,9 +154,14 @@ class TestGeometricShapes(TestCase):
         Ic_ref = np.diag([Icx_ref, Icx_ref, Iz_ref])
         self.assertApprox(Ic, Ic_ref)
 
+    def test_BVH(self):
+        bvh = coal.BVHModelOBBRSS()
+        self.assertEqual(bvh.num_vertices, 0)
+        self.assertEqual(bvh.vertices().shape, (0, 3))
+
     def test_convex(self):
-        verts = hppfcl.StdVec_Vec3f()
-        faces = hppfcl.StdVec_Triangle()
+        verts = coal.StdVec_Vec3s()
+        faces = coal.StdVec_Triangle()
         verts.extend(
             [
                 np.array([0, 0, 0]),
@@ -166,28 +169,28 @@ class TestGeometricShapes(TestCase):
                 np.array([1, 0, 0]),
             ]
         )
-        faces.append(hppfcl.Triangle(0, 1, 2))
-        hppfcl.Convex(verts, faces)
+        faces.append(coal.Triangle(0, 1, 2))
+        coal.Convex(verts, faces)
 
         verts.append(np.array([0, 0, 1]))
         try:
-            hppfcl.Convex.convexHull(verts, False, None)
+            coal.Convex.convexHull(verts, False, None)
             qhullAvailable = True
         except Exception as e:
-            self.assertEqual(
-                str(e), "Library built without qhull. Cannot build object of this type."
+            self.assertIn(
+                "Library built without qhull. Cannot build object of this type.", str(e)
             )
             qhullAvailable = False
 
         if qhullAvailable:
-            hppfcl.Convex.convexHull(verts, False, "")
-            hppfcl.Convex.convexHull(verts, True, "")
+            coal.Convex.convexHull(verts, False, "")
+            coal.Convex.convexHull(verts, True, "")
 
             try:
-                hppfcl.Convex.convexHull(verts[:3], False, None)
+                coal.Convex.convexHull(verts[:3], False, None)
             except Exception as e:
                 self.assertIn(
-                    str(e), "You shouldn't use this function with less than 4 points."
+                    "You shouldn't use this function with less than 4 points.", str(e)
                 )
 
 

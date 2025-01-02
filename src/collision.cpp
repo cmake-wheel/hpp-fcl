@@ -35,15 +35,12 @@
 
 /** \author Jia Pan */
 
-#include <hpp/fcl/collision.h>
-#include <hpp/fcl/collision_utility.h>
-#include <hpp/fcl/collision_func_matrix.h>
-#include <hpp/fcl/narrowphase/narrowphase.h>
+#include "coal/collision.h"
+#include "coal/collision_utility.h"
+#include "coal/collision_func_matrix.h"
+#include "coal/narrowphase/narrowphase.h"
 
-#include <iostream>
-
-namespace hpp {
-namespace fcl {
+namespace coal {
 
 CollisionFunctionMatrix& getCollisionFunctionLookTable() {
   static CollisionFunctionMatrix table;
@@ -56,6 +53,7 @@ void CollisionResult::swapObjects() {
        it != contacts.end(); ++it) {
     std::swap(it->o1, it->o2);
     std::swap(it->b1, it->b2);
+    it->nearest_points[0].swap(it->nearest_points[1]);
     it->normal *= -1;
   }
 }
@@ -67,11 +65,11 @@ std::size_t collide(const CollisionObject* o1, const CollisionObject* o2,
                  result);
 }
 
-std::size_t collide(const CollisionGeometry* o1, const Transform3f& tf1,
-                    const CollisionGeometry* o2, const Transform3f& tf2,
+std::size_t collide(const CollisionGeometry* o1, const Transform3s& tf1,
+                    const CollisionGeometry* o2, const Transform3s& tf2,
                     const CollisionRequest& request, CollisionResult& result) {
-  // If securit margin is set to -infinity, return that there is no collision
-  if (request.security_margin == -std::numeric_limits<FCL_REAL>::infinity()) {
+  // If security margin is set to -infinity, return that there is no collision
+  if (request.security_margin == -std::numeric_limits<CoalScalar>::infinity()) {
     result.clear();
     return false;
   }
@@ -81,8 +79,8 @@ std::size_t collide(const CollisionGeometry* o1, const Transform3f& tf1,
   const CollisionFunctionMatrix& looktable = getCollisionFunctionLookTable();
   std::size_t res;
   if (request.num_max_contacts == 0) {
-    HPP_FCL_THROW_PRETTY("Invalid number of max contacts (current value is 0).",
-                         std::invalid_argument);
+    COAL_THROW_PRETTY("Invalid number of max contacts (current value is 0).",
+                      std::invalid_argument);
     res = 0;
   } else {
     OBJECT_TYPE object_type1 = o1->getObjectType();
@@ -93,37 +91,39 @@ std::size_t collide(const CollisionGeometry* o1, const Transform3f& tf1,
     if (object_type1 == OT_GEOM &&
         (object_type2 == OT_BVH || object_type2 == OT_HFIELD)) {
       if (!looktable.collision_matrix[node_type2][node_type1]) {
-        HPP_FCL_THROW_PRETTY("Collision function between node type "
-                                 << std::string(get_node_type_name(node_type1))
-                                 << " and node type "
-                                 << std::string(get_node_type_name(node_type2))
-                                 << " is not yet supported.",
-                             std::invalid_argument);
+        COAL_THROW_PRETTY("Collision function between node type "
+                              << std::string(get_node_type_name(node_type1))
+                              << " and node type "
+                              << std::string(get_node_type_name(node_type2))
+                              << " is not yet supported.",
+                          std::invalid_argument);
         res = 0;
       } else {
         res = looktable.collision_matrix[node_type2][node_type1](
             o2, tf2, o1, tf1, &solver, request, result);
         result.swapObjects();
+        result.nearest_points[0].swap(result.nearest_points[1]);
+        result.normal *= -1;
       }
     } else {
       if (!looktable.collision_matrix[node_type1][node_type2]) {
-        HPP_FCL_THROW_PRETTY("Collision function between node type "
-                                 << std::string(get_node_type_name(node_type1))
-                                 << " and node type "
-                                 << std::string(get_node_type_name(node_type2))
-                                 << " is not yet supported.",
-                             std::invalid_argument);
+        COAL_THROW_PRETTY("Collision function between node type "
+                              << std::string(get_node_type_name(node_type1))
+                              << " and node type "
+                              << std::string(get_node_type_name(node_type2))
+                              << " is not yet supported.",
+                          std::invalid_argument);
         res = 0;
       } else
         res = looktable.collision_matrix[node_type1][node_type2](
             o1, tf1, o2, tf2, &solver, request, result);
     }
   }
-  if (solver.gjk_initial_guess == GJKInitialGuess::CachedGuess ||
-      solver.enable_cached_guess) {
-    result.cached_gjk_guess = solver.cached_guess;
-    result.cached_support_func_guess = solver.support_func_cached_guess;
-  }
+  // Cache narrow phase solver result. If the option in the request is selected,
+  // also store the solver result in the request for the next call.
+  result.cached_gjk_guess = solver.cached_guess;
+  result.cached_support_func_guess = solver.support_func_cached_guess;
+  request.updateGuess(result);
 
   return res;
 }
@@ -143,12 +143,12 @@ ComputeCollision::ComputeCollision(const CollisionGeometry* o1,
 
   if ((swap_geoms && !looktable.collision_matrix[node_type2][node_type1]) ||
       (!swap_geoms && !looktable.collision_matrix[node_type1][node_type2])) {
-    HPP_FCL_THROW_PRETTY("Collision function between node type "
-                             << std::string(get_node_type_name(node_type1))
-                             << " and node type "
-                             << std::string(get_node_type_name(node_type2))
-                             << " is not yet supported.",
-                         std::invalid_argument);
+    COAL_THROW_PRETTY("Collision function between node type "
+                          << std::string(get_node_type_name(node_type1))
+                          << " and node type "
+                          << std::string(get_node_type_name(node_type2))
+                          << " is not yet supported.",
+                      std::invalid_argument);
   }
   if (swap_geoms)
     func = looktable.collision_matrix[node_type2][node_type1];
@@ -156,12 +156,12 @@ ComputeCollision::ComputeCollision(const CollisionGeometry* o1,
     func = looktable.collision_matrix[node_type1][node_type2];
 }
 
-std::size_t ComputeCollision::run(const Transform3f& tf1,
-                                  const Transform3f& tf2,
+std::size_t ComputeCollision::run(const Transform3s& tf1,
+                                  const Transform3s& tf2,
                                   const CollisionRequest& request,
                                   CollisionResult& result) const {
   // If security margin is set to -infinity, return that there is no collision
-  if (request.security_margin == -std::numeric_limits<FCL_REAL>::infinity()) {
+  if (request.security_margin == -std::numeric_limits<CoalScalar>::infinity()) {
     result.clear();
     return false;
   }
@@ -169,14 +169,22 @@ std::size_t ComputeCollision::run(const Transform3f& tf1,
   if (swap_geoms) {
     res = func(o2, tf2, o1, tf1, &solver, request, result);
     result.swapObjects();
+    result.nearest_points[0].swap(result.nearest_points[1]);
+    result.normal *= -1;
   } else {
     res = func(o1, tf1, o2, tf2, &solver, request, result);
   }
+  // Cache narrow phase solver result. If the option in the request is selected,
+  // also store the solver result in the request for the next call.
+  result.cached_gjk_guess = solver.cached_guess;
+  result.cached_support_func_guess = solver.support_func_cached_guess;
+  request.updateGuess(result);
+
   return res;
 }
 
-std::size_t ComputeCollision::operator()(const Transform3f& tf1,
-                                         const Transform3f& tf2,
+std::size_t ComputeCollision::operator()(const Transform3s& tf1,
+                                         const Transform3s& tf2,
                                          const CollisionRequest& request,
                                          CollisionResult& result) const
 
@@ -191,14 +199,7 @@ std::size_t ComputeCollision::operator()(const Transform3f& tf1,
   } else
     res = run(tf1, tf2, request, result);
 
-  if (solver.gjk_initial_guess == GJKInitialGuess::CachedGuess ||
-      solver.enable_cached_guess) {
-    result.cached_gjk_guess = solver.cached_guess;
-    result.cached_support_func_guess = solver.support_func_cached_guess;
-  }
-
   return res;
 }
 
-}  // namespace fcl
-}  // namespace hpp
+}  // namespace coal

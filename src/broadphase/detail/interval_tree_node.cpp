@@ -35,16 +35,15 @@
 
 /** @author Jia Pan */
 
-#ifndef HPP_FCL_BROADPHASE_DETAIL_INTERVALTREENODE_INL_H
-#define HPP_FCL_BROADPHASE_DETAIL_INTERVALTREENODE_INL_H
+#ifndef COAL_BROADPHASE_DETAIL_INTERVALTREENODE_INL_H
+#define COAL_BROADPHASE_DETAIL_INTERVALTREENODE_INL_H
 
-#include "hpp/fcl/broadphase/detail/interval_tree_node.h"
+#include "coal/broadphase/detail/interval_tree_node.h"
 
 #include <iostream>
 #include <algorithm>
 
-namespace hpp {
-namespace fcl {
+namespace coal {
 namespace detail {
 
 //==============================================================================
@@ -67,17 +66,17 @@ IntervalTreeNode::~IntervalTreeNode() {
 }
 
 //==============================================================================
-void IntervalTreeNode::print(IntervalTreeNode* nil,
+void IntervalTreeNode::print(IntervalTreeNode* invalid_node,
                              IntervalTreeNode* root) const {
   stored_interval->print();
   std::cout << ", k = " << key << ", h = " << high << ", mH = " << max_high;
   std::cout << "  l->key = ";
-  if (left == nil)
+  if (left == invalid_node)
     std::cout << "nullptr";
   else
     std::cout << left->key;
   std::cout << "  r->key = ";
-  if (right == nil)
+  if (right == invalid_node)
     std::cout << "nullptr";
   else
     std::cout << right->key;
@@ -90,7 +89,6 @@ void IntervalTreeNode::print(IntervalTreeNode* nil,
 }
 
 }  // namespace detail
-}  // namespace fcl
-}  // namespace hpp
+}  // namespace coal
 
 #endif
